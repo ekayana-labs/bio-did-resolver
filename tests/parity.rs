@@ -84,6 +84,57 @@ fn flags_and_key_types_match_the_program() {
     );
 }
 
+#[test]
+fn key_buffer_constants_match_the_program() {
+    assert_eq!(ix::CREATE_KEY_BUFFER, program_ix::CREATE_KEY_BUFFER);
+    assert_eq!(ix::WRITE_KEY_BUFFER, program_ix::WRITE_KEY_BUFFER);
+    assert_eq!(
+        ix::ADD_VERIFICATION_METHOD_FROM_BUFFER,
+        program_ix::ADD_VERIFICATION_METHOD_FROM_BUFFER
+    );
+    assert_eq!(ix::CLOSE_KEY_BUFFER, program_ix::CLOSE_KEY_BUFFER);
+    assert_eq!(core::KEY_BUFFER_SEED, program::KEY_BUFFER_SEED);
+    assert_eq!(
+        core::KEY_BUFFER_DISCRIMINATOR,
+        program::KEY_BUFFER_DISCRIMINATOR
+    );
+    assert_eq!(core::KEY_BUFFER_HEADER_LEN, program::KEY_BUFFER_HEADER);
+}
+
+/// A key buffer image laid out from the program's own offsets decodes
+/// through `did-bio-core`.
+#[test]
+fn key_buffer_layout_roundtrips_through_core() {
+    let mut image = vec![0u8; program::KEY_BUFFER_HEADER + 32];
+    image[..8].copy_from_slice(&program::KEY_BUFFER_DISCRIMINATOR);
+    image[program::KB_OFF_DID_ACCOUNT..program::KB_OFF_DID_ACCOUNT + 32].fill(3);
+    image[program::KB_OFF_AUTHORITY..program::KB_OFF_AUTHORITY + 32].fill(4);
+    image[program::KB_OFF_BUMP] = 254;
+    image[program::KB_OFF_METHOD_TYPE] = program::VM_TYPE_ED25519;
+    image[program::KB_OFF_FLAGS..program::KB_OFF_FLAGS + 2]
+        .copy_from_slice(&program::VM_FLAG_AUTHENTICATION.to_le_bytes());
+    image[program::KB_OFF_KEY_LEN..program::KB_OFF_KEY_LEN + 4]
+        .copy_from_slice(&32u32.to_le_bytes());
+    image[program::KB_OFF_WRITTEN..program::KB_OFF_WRITTEN + 4]
+        .copy_from_slice(&20u32.to_le_bytes());
+    image[program::KB_OFF_FRAGMENT_LEN..program::KB_OFF_FRAGMENT_LEN + 4]
+        .copy_from_slice(&3u32.to_le_bytes());
+    image[program::KB_OFF_FRAGMENT..program::KB_OFF_FRAGMENT + 3].copy_from_slice(b"rot");
+    image[program::KB_OFF_KEY..program::KB_OFF_KEY + 20].fill(9);
+
+    let state = core::KeyBufferState::from_account_data(&image).unwrap();
+    assert_eq!(state.did_account, [3u8; 32]);
+    assert_eq!(state.authority, [4u8; 32]);
+    assert_eq!(state.bump, 254);
+    assert_eq!(state.method_type, KeyType::Ed25519);
+    assert_eq!(state.flags, vm_flags::AUTHENTICATION);
+    assert_eq!(state.key_len, 32);
+    assert_eq!(state.fragment, "rot");
+    assert_eq!(state.written(), 20);
+    assert_eq!(state.key_data, vec![9u8; 20]);
+    assert!(!state.is_complete());
+}
+
 /// A generative account image built from the program's own layout
 /// constants decodes through `did-bio-core` to the generative state.
 #[test]

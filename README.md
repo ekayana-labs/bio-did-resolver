@@ -1,5 +1,12 @@
 # bio-did-resolver
 
+[![CI](https://github.com/ekayana-labs/bio-did-resolver/actions/workflows/main.yml/badge.svg)](https://github.com/ekayana-labs/bio-did-resolver/actions/workflows/main.yml)
+[![crates.io](https://img.shields.io/crates/v/bio-did-resolver.svg)](https://crates.io/crates/bio-did-resolver)
+[![docs.rs](https://img.shields.io/docsrs/bio-did-resolver)](https://docs.rs/bio-did-resolver)
+[![MSRV](https://img.shields.io/crates/msrv/bio-did-resolver)](Cargo.toml)
+[![license](https://img.shields.io/crates/l/bio-did-resolver)](LICENSE)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/ekayana-labs/bio-did-resolver/badge)](https://scorecard.dev/viewer/?uri=github.com/ekayana-labs/bio-did-resolver)
+
 Resolver and registry client for the
 [`did:bio`](https://github.com/ekayana-labs/did-bio-spec) DID method on
 Solana.

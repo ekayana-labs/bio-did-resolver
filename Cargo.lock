@@ -357,9 +357,9 @@ dependencies = [
 
 [[package]]
 name = "bio-did-registry"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a630e6f99196f3e74293b4f238ee5d66f97bb2bebe9d075da4bf7e1bbd00a5b8"
+checksum = "0785a11e4f5a7c25f7b00850796a783d6a9d137701917330b89caba2027514ed"
 dependencies = [
  "five8_const",
  "pinocchio",
@@ -964,9 +964,9 @@ checksum = "6e5c37193a1db1d8ed868c03ec7b152175f26160a5b740e5e484143877e0adf0"
 
 [[package]]
 name = "did-bio-core"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa346593489e98f38f4a5a2b24f3b98a2073234c1bac6a28e324bcf755cf874f"
+checksum = "2f5201a1f338f63b167e886dbde11e62773c1f21883df844d35940f72556ba4c"
 dependencies = [
  "base64 0.22.1",
  "bs58",

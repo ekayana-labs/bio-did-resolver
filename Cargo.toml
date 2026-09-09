@@ -20,7 +20,7 @@ name = "bio-did-resolver"
 path = "src/main.rs"
 
 [dependencies]
-did-bio-core = "0.1"
+did-bio-core = "0.1.1"
 solana-client = "3"
 solana-sdk = "3"
 solana-commitment-config = "3"
@@ -31,4 +31,4 @@ bs58 = "0.5"
 
 [dev-dependencies]
 sha2 = "0.10"
-bio-did-registry = { version = "0.1", features = ["no-entrypoint"] }
+bio-did-registry = { version = "0.1.1", features = ["no-entrypoint"] }

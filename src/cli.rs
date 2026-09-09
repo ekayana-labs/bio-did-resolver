@@ -34,7 +34,9 @@ pub enum Command {
         /// Public key as base58
         #[arg(long, value_name = "BASE58", conflicts_with = "key_file")]
         key: Option<String>,
-        /// Public key as a raw byte file; use this for ML-DSA-87 keys
+        /// Public key as a raw byte file; use this for ML-DSA-87 keys, which
+        /// are uploaded in chunks through a key buffer over several
+        /// transactions and resume where they left off if interrupted
         #[arg(long, value_name = "PATH")]
         key_file: Option<PathBuf>,
         /// Comma separated: authentication, assertion, key-agreement,
@@ -88,6 +90,8 @@ pub enum Command {
     },
     /// Permanently deactivate a DID; requires --yes
     Deactivate(WriteOpts),
+    /// Discard a pending large key upload and reclaim its rent
+    CloseKeyBuffer(WriteOpts),
 }
 
 /// Options shared by every command that sends a transaction.

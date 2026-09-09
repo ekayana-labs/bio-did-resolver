@@ -7,7 +7,7 @@ use std::process::ExitCode;
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
 use did_bio_core::account::KeyType;
-use did_bio_core::{resolve_from_account, BioDid, Network, RawAccount};
+use did_bio_core::{resolve_from_account, BioDid, KeyBufferState, Network, RawAccount};
 use solana_client::rpc_client::RpcClient;
 use solana_commitment_config::CommitmentConfig;
 use solana_sdk::instruction::Instruction;
@@ -46,10 +46,14 @@ fn run(cli: Cli) -> Result<()> {
             let w = Write::new(&write)?;
             let key_type = key_type_of(key_type);
             let key = load_key(key.as_deref(), key_file.as_deref(), key_type)?;
+            let flags = parse_flags(&flags).map_err(|e| anyhow!(e))?;
+            if key.len() > ix::MAX_INLINE_KEY_LEN {
+                return w.upload_key(&fragment, key_type, flags, &key);
+            }
             let vm = ix::VerificationMethod {
                 fragment: &fragment,
                 key_type: key_type as u8,
-                flags: parse_flags(&flags).map_err(|e| anyhow!(e))?,
+                flags,
                 key: &key,
             };
             w.send(
@@ -128,6 +132,13 @@ fn run(cli: Cli) -> Result<()> {
                 ix::deactivate(&w.payer(), &w.payer(), &w.subject),
             )
         }
+        Command::CloseKeyBuffer(opts) => {
+            let w = Write::new(&opts)?;
+            w.send(
+                "close_key_buffer",
+                ix::close_key_buffer(&w.payer(), &w.payer(), &w.subject),
+            )
+        }
     }
 }
 
@@ -198,12 +209,35 @@ impl Write {
         self.keypair.pubkey()
     }
 
+    /// Send one instruction as one transaction (or simulate it).
     fn send(&self, action: &str, instruction: Instruction) -> Result<()> {
+        self.guard(action)?;
+        self.announce(action);
+        self.execute(&self.client(), instruction)
+    }
+
+    /// Mainnet needs an explicit --yes unless only simulating.
+    fn guard(&self, action: &str) -> Result<()> {
         if self.did.network == Network::Mainnet && !self.dry_run && !self.yes {
             bail!("refusing to send `{action}` to mainnet without --yes");
         }
-        let client =
-            RpcClient::new_with_commitment(self.url.clone(), CommitmentConfig::confirmed());
+        Ok(())
+    }
+
+    fn announce(&self, action: &str) {
+        println!("{action}");
+        println!("  did      {}", self.did);
+        println!("  account  {}", ix::did_account(&self.subject));
+        println!("  signer   {}", self.keypair.pubkey());
+        println!("  rpc      {}", self.url);
+    }
+
+    fn client(&self) -> RpcClient {
+        RpcClient::new_with_commitment(self.url.clone(), CommitmentConfig::confirmed())
+    }
+
+    /// Sign and send one instruction, or simulate it under --dry-run.
+    fn execute(&self, client: &RpcClient, instruction: Instruction) -> Result<()> {
         let blockhash = client
             .get_latest_blockhash()
             .context("fetching a recent blockhash")?;
@@ -213,12 +247,6 @@ impl Write {
             &[&self.keypair],
             blockhash,
         );
-
-        println!("{action}");
-        println!("  did      {}", self.did);
-        println!("  account  {}", ix::did_account(&self.subject));
-        println!("  signer   {}", self.keypair.pubkey());
-        println!("  rpc      {}", self.url);
 
         if self.dry_run {
             let result = client
@@ -246,6 +274,108 @@ impl Write {
             explorer_url(self.did.network, &signature.to_string())
         );
         Ok(())
+    }
+
+    /// Add a method whose key does not fit in one transaction: open a key
+    /// buffer (or pick up the pending one), write the key in chunks, then
+    /// append the method and close the buffer. Every step is a transaction
+    /// of its own, so an interrupted upload resumes where it stopped.
+    fn upload_key(&self, fragment: &str, key_type: KeyType, flags: u16, key: &[u8]) -> Result<()> {
+        self.guard("add_verification_method_from_buffer")?;
+        self.announce("add_verification_method (through a key buffer)");
+        let client = self.client();
+        let payer = self.payer();
+        let buffer = ix::key_buffer(&self.subject, &payer);
+        println!("  buffer   {buffer}");
+        let chunks = key.len().div_ceil(ix::KEY_CHUNK_LEN);
+
+        let written = match self.pending_upload(&client, &buffer)? {
+            Some(pending) => {
+                let same = pending.fragment == fragment
+                    && pending.method_type == key_type
+                    && pending.flags == flags
+                    && pending.key_len == key.len()
+                    && key.starts_with(&pending.key_data);
+                if !same {
+                    bail!(
+                        "a different key upload is pending in {buffer}; \
+                         run `close-key-buffer` to discard it first"
+                    );
+                }
+                if self.dry_run {
+                    println!(
+                        "  a pending upload holds {} of {} bytes; a dry run does not continue it",
+                        pending.written(),
+                        key.len()
+                    );
+                    return Ok(());
+                }
+                println!("  resuming at byte {} of {}", pending.written(), key.len());
+                pending.written()
+            }
+            None => {
+                println!("  create_key_buffer");
+                self.execute(
+                    &client,
+                    ix::create_key_buffer(
+                        &payer,
+                        &payer,
+                        &self.subject,
+                        fragment,
+                        key_type as u8,
+                        flags,
+                        key.len() as u32,
+                    ),
+                )?;
+                if self.dry_run {
+                    println!(
+                        "  dry run: would then send {chunks} write_key_buffer chunks of up to {} \
+                         bytes and add_verification_method_from_buffer",
+                        ix::KEY_CHUNK_LEN
+                    );
+                    return Ok(());
+                }
+                0
+            }
+        };
+
+        for (i, chunk) in key[written..].chunks(ix::KEY_CHUNK_LEN).enumerate() {
+            let offset = written + i * ix::KEY_CHUNK_LEN;
+            println!(
+                "  write_key_buffer bytes {offset}..{} of {}",
+                offset + chunk.len(),
+                key.len()
+            );
+            self.execute(
+                &client,
+                ix::write_key_buffer(&payer, &self.subject, offset as u32, chunk),
+            )?;
+        }
+        println!("  add_verification_method_from_buffer");
+        self.execute(
+            &client,
+            ix::add_verification_method_from_buffer(&payer, &payer, &self.subject),
+        )
+    }
+
+    /// The key buffer this signer has open for the DID, if any.
+    fn pending_upload(
+        &self,
+        client: &RpcClient,
+        buffer: &Pubkey,
+    ) -> Result<Option<KeyBufferState>> {
+        let account = client
+            .get_account_with_commitment(buffer, CommitmentConfig::confirmed())
+            .context("fetching the key buffer")?
+            .value;
+        match account {
+            Some(account) if account.owner == ix::program_id() => {
+                let state = KeyBufferState::from_account_data(&account.data)
+                    .map_err(|e| anyhow!("decoding the key buffer: {e}"))?;
+                Ok(Some(state))
+            }
+            _ => Ok(None),
+        }
     }
 }
 

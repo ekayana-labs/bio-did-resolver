@@ -60,6 +60,16 @@ gaining any control over it.
 bio-did-resolver init did:bio:devnet:<SUBJECT> --keypair sponsor.json
 ```
 
+An ML-DSA-87 key is 2592 bytes and a transaction holds 1232, so
+`add-key --type ml-dsa-87` uploads the key through a key buffer: one
+transaction opens it, three write the chunks, and one appends the method and
+refunds the buffer's rent. Run the same command again to resume an
+interrupted upload, or discard it:
+
+```console
+bio-did-resolver close-key-buffer
+```
+
 ### Safety
 
 - `--dry-run` simulates the transaction and prints the program logs and

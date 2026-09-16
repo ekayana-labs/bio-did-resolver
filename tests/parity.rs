@@ -53,7 +53,7 @@ fn account_constants_match_the_program() {
     assert_eq!(core::MAX_SERVICE_TYPE_LEN, program::MAX_SERVICE_TYPE_LEN);
     assert_eq!(core::MAX_ENDPOINT_LEN, program::MAX_ENDPOINT_LEN);
     assert_eq!(core::MAX_CONTROLLER_LEN, program::MAX_CONTROLLER_LEN);
-    assert_eq!(core::MAX_KEY_DATA_LEN, program::MAX_KEY_DATA_LEN);
+    assert_eq!(core::OWNED_SUBJECT_SEED, program::OWNED_SUBJECT_SEED);
 }
 
 #[test]
@@ -78,10 +78,18 @@ fn flags_and_key_types_match_the_program() {
     assert_eq!(KeyType::X25519 as u8, program::VM_TYPE_X25519);
     assert_eq!(KeyType::Secp256k1 as u8, program::VM_TYPE_SECP256K1);
     assert_eq!(KeyType::MlDsa87 as u8, program::VM_TYPE_DILITHIUM5);
-    assert_eq!(
-        KeyType::MlDsa87.expected_key_len(),
-        program::MAX_KEY_DATA_LEN
-    );
+    for key_type in [
+        KeyType::Ed25519,
+        KeyType::X25519,
+        KeyType::Secp256k1,
+        KeyType::MlDsa87,
+    ] {
+        assert_eq!(
+            Some(key_type.expected_key_len()),
+            program::expected_key_len(key_type as u8),
+            "{key_type:?}"
+        );
+    }
 }
 
 #[test]

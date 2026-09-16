@@ -15,6 +15,9 @@ exclude = [".github/"]
 name = "bio_did_resolver"
 path = "src/lib.rs"
 
+[package.metadata.cargo-semver-checks.lints]
+enum_variant_added = { required-update = "minor" }
+
 [[bin]]
 name = "bio-did-resolver"
 path = "src/main.rs"

@@ -2,6 +2,7 @@
 //! this resolver, `did-bio-core`, and the on-chain program. The program
 //! is the source of truth; if it changes, these fail before anything ships.
 
+use bio_did_registry::error::DidError;
 use bio_did_registry::{ix as program_ix, state as program, ID};
 use bio_did_resolver::ix;
 use did_bio_core::account::{self as core, vm_flags, KeyType};
@@ -32,6 +33,7 @@ fn discriminators_match_the_program() {
     assert_eq!(ix::REMOVE_SERVICE, program_ix::REMOVE_SERVICE);
     assert_eq!(ix::SET_CONTROLLERS, program_ix::SET_CONTROLLERS);
     assert_eq!(ix::DEACTIVATE, program_ix::DEACTIVATE);
+    assert_eq!(ix::INITIALIZE_OWNED, program_ix::INITIALIZE_OWNED);
 }
 
 #[test]
@@ -88,6 +90,62 @@ fn flags_and_key_types_match_the_program() {
             Some(key_type.expected_key_len()),
             program::expected_key_len(key_type as u8),
             "{key_type:?}"
+        );
+    }
+}
+
+/// Every error the program can raise is in the resolver's table under the
+/// program's own name and code, and nothing else is.
+#[test]
+fn program_errors_match_the_program() {
+    let variants = [
+        DidError::Unauthorized,
+        DidError::DidDeactivated,
+        DidError::InvalidFragment,
+        DidError::FragmentAlreadyInUse,
+        DidError::VerificationMethodNotFound,
+        DidError::ServiceNotFound,
+        DidError::TooManyVerificationMethods,
+        DidError::TooManyServices,
+        DidError::TooManyControllers,
+        DidError::InvalidKeyLength,
+        DidError::InvalidFlags,
+        DidError::ProtectedVerificationMethod,
+        DidError::LastAuthority,
+        DidError::InvalidController,
+        DidError::InvalidServiceValue,
+        DidError::InvalidKeyBuffer,
+        DidError::InvalidKeyChunk,
+        DidError::KeyBufferIncomplete,
+    ];
+    assert_eq!(variants.len(), ix::PROGRAM_ERRORS.len());
+    for (variant, (code, name, _)) in variants.iter().zip(ix::PROGRAM_ERRORS) {
+        assert_eq!(*variant as u32, code, "{name}");
+        assert_eq!(format!("{variant:?}"), name);
+    }
+}
+
+/// The three derivations of an owned subject agree: this crate, the
+/// resolver library, and the program, on the golden vector the program
+/// pins and on arbitrary inputs.
+#[test]
+fn owned_subjects_match_the_program() {
+    let authority = [0x11u8; 32];
+    let expected = [
+        176, 5, 37, 51, 53, 114, 109, 56, 180, 140, 48, 89, 115, 119, 13, 138, 192, 54, 110, 20,
+        205, 247, 212, 197, 39, 52, 9, 159, 203, 10, 250, 28,
+    ];
+    assert_eq!(program::owned_subject(&authority, 42), expected);
+    assert_eq!(did_bio_core::find_owned_subject(&authority, 42).0, expected);
+    assert_eq!(
+        ix::owned_subject(&solana_sdk::pubkey::Pubkey::new_from_array(authority), 42).to_bytes(),
+        expected
+    );
+    for nonce in [0u64, 1, 7, u64::MAX] {
+        let authority = solana_sdk::pubkey::Pubkey::new_unique();
+        assert_eq!(
+            ix::owned_subject(&authority, nonce).to_bytes(),
+            program::owned_subject(&authority.to_bytes(), nonce)
         );
     }
 }

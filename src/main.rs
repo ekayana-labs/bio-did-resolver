@@ -7,15 +7,21 @@ use std::process::ExitCode;
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
 use did_bio_core::account::KeyType;
-use did_bio_core::{resolve_from_account, BioDid, KeyBufferState, Network, RawAccount};
+use did_bio_core::{
+    resolution_error, resolve_from_account, BioDid, KeyBufferState, Network, RawAccount,
+};
+use solana_client::client_error::ClientError;
 use solana_client::rpc_client::RpcClient;
 use solana_commitment_config::CommitmentConfig;
-use solana_sdk::instruction::Instruction;
+use solana_sdk::instruction::{Instruction, InstructionError};
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signature::{read_keypair_file, Keypair, Signer};
-use solana_sdk::transaction::Transaction;
+use solana_sdk::transaction::{Transaction, TransactionError};
 
-use bio_did_resolver::cli::{parse_flags, Cli, Command, KeyTypeArg, NetworkArg, WriteOpts};
+use bio_did_resolver::cli::{
+    check_external_controller, check_flags, check_fragment, parse_flags, Cli, Command, NetworkArg,
+    WriteOpts,
+};
 use bio_did_resolver::ix;
 
 fn main() -> ExitCode {
@@ -33,7 +39,30 @@ fn run(cli: Cli) -> Result<()> {
         Command::Resolve { did, url } => resolve(&did, url),
         Command::Init(opts) => {
             let w = Write::new(&opts)?;
+            if !w.did.is_key_subject() {
+                bail!(
+                    "{} is an owned subject, not a key; its authority creates it with \
+                     `init-owned <NONCE>`",
+                    w.did
+                );
+            }
             w.send("initialize", ix::initialize(&w.payer(), &w.subject))
+        }
+        Command::InitOwned { nonce, write } => {
+            // The DID follows from the keypair and the nonce; the keypair
+            // signs as the authority and pays.
+            let keypair = load_keypair(write.keypair.as_deref())?;
+            let did = BioDid::owned(
+                network_of(write.network),
+                &keypair.pubkey().to_bytes(),
+                nonce,
+            );
+            let w = Write::new(&write.for_did(did.to_string()))?;
+            w.send_with(
+                "initialize_owned",
+                &[("nonce", nonce.to_string())],
+                ix::initialize_owned(&w.payer(), &w.payer(), nonce),
+            )
         }
         Command::AddKey {
             fragment,
@@ -44,9 +73,11 @@ fn run(cli: Cli) -> Result<()> {
             write,
         } => {
             let w = Write::new(&write)?;
-            let key_type = key_type_of(key_type);
+            let key_type = KeyType::from(key_type);
+            check_fragment(&fragment).map_err(|e| anyhow!(e))?;
             let key = load_key(key.as_deref(), key_file.as_deref(), key_type)?;
             let flags = parse_flags(&flags).map_err(|e| anyhow!(e))?;
+            check_flags(key_type, flags).map_err(|e| anyhow!(e))?;
             if key.len() > ix::MAX_INLINE_KEY_LEN {
                 return w.upload_key(&fragment, key_type, flags, &key);
             }
@@ -87,6 +118,7 @@ fn run(cli: Cli) -> Result<()> {
             write,
         } => {
             let w = Write::new(&write)?;
+            check_fragment(&fragment).map_err(|e| anyhow!(e))?;
             let service = ix::Service {
                 fragment: &fragment,
                 service_type: &service_type,
@@ -117,6 +149,9 @@ fn run(cli: Cli) -> Result<()> {
                         .with_context(|| format!("invalid controller `{s}`"))
                 })
                 .collect::<Result<Vec<_>>>()?;
+            for did in &other {
+                check_external_controller(did).map_err(|e| anyhow!(e))?;
+            }
             w.send(
                 "set_controllers",
                 ix::set_controllers(&w.payer(), &w.payer(), &w.subject, &native, &other),
@@ -165,9 +200,35 @@ fn resolve(did: &str, url: Option<String>) -> Result<()> {
     let resolution = resolve_from_account(&did, account.as_ref());
     println!("{}", serde_json::to_string_pretty(&resolution)?);
     if let Some(code) = &resolution.resolution_metadata.error {
+        if code == resolution_error::NOT_FOUND && !did.is_key_subject() {
+            bail!(
+                "resolution failed: {code}; an owned subject has no generative document and \
+                 resolves once its authority runs `init-owned`"
+            );
+        }
         bail!("resolution failed: {code}");
     }
     Ok(())
+}
+
+/// A transaction error with the registry's own errors spelled out, so a
+/// refusal reads as a reason rather than a code.
+fn describe(err: &TransactionError) -> String {
+    if let TransactionError::InstructionError(_, InstructionError::Custom(code)) = err {
+        if let Some((name, meaning)) = ix::program_error(*code) {
+            return format!("{err}: {name} ({code}), {meaning}");
+        }
+    }
+    err.to_string()
+}
+
+/// An RPC client error, described the same way when it carries a
+/// transaction error.
+fn describe_client_error(err: ClientError) -> anyhow::Error {
+    match err.get_transaction_error() {
+        Some(tx_err) => anyhow!("{}", describe(&tx_err)),
+        None => anyhow::Error::from(err),
+    }
 }
 
 /// Everything a write command needs: the target DID, the signing keypair,
@@ -211,8 +272,21 @@ impl Write {
 
     /// Send one instruction as one transaction (or simulate it).
     fn send(&self, action: &str, instruction: Instruction) -> Result<()> {
+        self.send_with(action, &[], instruction)
+    }
+
+    /// [`Write::send`] with extra lines in the announcement.
+    fn send_with(
+        &self,
+        action: &str,
+        details: &[(&str, String)],
+        instruction: Instruction,
+    ) -> Result<()> {
         self.guard(action)?;
         self.announce(action);
+        for (label, value) in details {
+            println!("  {label:<8} {value}");
+        }
         self.execute(&self.client(), instruction)
     }
 
@@ -260,13 +334,17 @@ impl Write {
                 println!("  compute units {units}");
             }
             return match result.err {
-                Some(err) => Err(anyhow!("simulation failed: {err}")),
+                Some(err) => Err(anyhow!(
+                    "simulation failed: {}",
+                    describe(&TransactionError::from(err))
+                )),
                 None => Ok(()),
             };
         }
 
         let signature = client
             .send_and_confirm_transaction(&tx)
+            .map_err(describe_client_error)
             .context("sending the transaction")?;
         println!("  signature {signature}");
         println!(
@@ -385,15 +463,6 @@ fn network_of(arg: NetworkArg) -> Network {
         NetworkArg::Devnet => Network::Devnet,
         NetworkArg::Testnet => Network::Testnet,
         NetworkArg::Localnet => Network::Localnet,
-    }
-}
-
-fn key_type_of(arg: KeyTypeArg) -> KeyType {
-    match arg {
-        KeyTypeArg::Ed25519 => KeyType::Ed25519,
-        KeyTypeArg::X25519 => KeyType::X25519,
-        KeyTypeArg::Secp256k1 => KeyType::Secp256k1,
-        KeyTypeArg::MlDsa87 => KeyType::MlDsa87,
     }
 }
 

@@ -25,6 +25,109 @@ pub const CREATE_KEY_BUFFER: [u8; 8] = [138, 70, 101, 189, 154, 98, 203, 23];
 pub const WRITE_KEY_BUFFER: [u8; 8] = [61, 88, 82, 10, 227, 249, 18, 117];
 pub const ADD_VERIFICATION_METHOD_FROM_BUFFER: [u8; 8] = [111, 184, 129, 9, 216, 207, 122, 90];
 pub const CLOSE_KEY_BUFFER: [u8; 8] = [6, 209, 103, 32, 78, 18, 70, 184];
+// A DID with a program derived subject, controlled by its creator.
+pub const INITIALIZE_OWNED: [u8; 8] = [51, 133, 240, 229, 41, 137, 108, 91];
+
+/// The program's domain errors, custom codes 6000 upwards, by name and in
+/// the words of its documentation. `tests/parity.rs` pins the table against
+/// the program's own error type.
+pub const PROGRAM_ERRORS: [(u32, &str, &str); 18] = [
+    (
+        6000,
+        "Unauthorized",
+        "the signer is not an authority for this DID",
+    ),
+    (
+        6001,
+        "DidDeactivated",
+        "this DID has been permanently deactivated",
+    ),
+    (
+        6002,
+        "InvalidFragment",
+        "the fragment is empty, too long, reserved, or contains invalid characters",
+    ),
+    (
+        6003,
+        "FragmentAlreadyInUse",
+        "a verification method or service with this fragment already exists",
+    ),
+    (
+        6004,
+        "VerificationMethodNotFound",
+        "no verification method with this fragment exists",
+    ),
+    (
+        6005,
+        "ServiceNotFound",
+        "no service with this fragment exists",
+    ),
+    (
+        6006,
+        "TooManyVerificationMethods",
+        "the verification method limit is reached",
+    ),
+    (6007, "TooManyServices", "the service limit is reached"),
+    (
+        6008,
+        "TooManyControllers",
+        "the controller limit is reached",
+    ),
+    (
+        6009,
+        "InvalidKeyLength",
+        "the key material length does not match the verification method type",
+    ),
+    (
+        6010,
+        "InvalidFlags",
+        "unknown flag bits, or flags not permitted for this key type",
+    ),
+    (
+        6011,
+        "ProtectedVerificationMethod",
+        "protected verification methods require their own key as authority",
+    ),
+    (
+        6012,
+        "LastAuthority",
+        "the operation would remove the last capable update authority",
+    ),
+    (
+        6013,
+        "InvalidController",
+        "a controller entry is invalid or duplicated",
+    ),
+    (
+        6014,
+        "InvalidServiceValue",
+        "the service type or endpoint is empty, too long, or not printable ASCII",
+    ),
+    (
+        6015,
+        "InvalidKeyBuffer",
+        "the key buffer is not bound to this DID and authority",
+    ),
+    (
+        6016,
+        "InvalidKeyChunk",
+        "the chunk does not continue the bytes written so far, or runs past the key length",
+    ),
+    (
+        6017,
+        "KeyBufferIncomplete",
+        "the key buffer has not received every byte of the key yet",
+    ),
+];
+
+/// The name and meaning of a custom program error code, when it is one of
+/// the registry's.
+pub fn program_error(code: u32) -> Option<(&'static str, &'static str)> {
+    PROGRAM_ERRORS
+        .iter()
+        .find(|(c, _, _)| *c == code)
+        .map(|(_, name, meaning)| (*name, *meaning))
+}
 
 /// Largest key sent inline in `add_verification_method`. Longer keys go
 /// through a key buffer, because a transaction holds at most 1232 bytes.
@@ -43,6 +146,13 @@ pub fn program_id() -> Pubkey {
 pub fn did_account(subject: &Pubkey) -> Pubkey {
     let (address, _bump) = did_bio_core::find_did_account_address(&subject.to_bytes());
     Pubkey::new_from_array(address)
+}
+
+/// The subject that `initialize_owned(nonce)` signed by `authority` creates:
+/// `["bio-did-owned", authority, nonce_le]`, an address off the curve.
+pub fn owned_subject(authority: &Pubkey, nonce: u64) -> Pubkey {
+    let (subject, _bump) = did_bio_core::find_owned_subject(&authority.to_bytes(), nonce);
+    Pubkey::new_from_array(subject)
 }
 
 /// The key buffer through which `authority` uploads a large key into the
@@ -100,7 +210,9 @@ fn update_accounts(payer: &Pubkey, authority: &Pubkey, subject: &Pubkey) -> Vec<
 }
 
 /// Create the registry account holding the generative document.
-/// Permissionless: the payer need not be the subject.
+/// Permissionless: the payer need not be the subject. The subject must be
+/// a key, the program refuses an off-curve address, which only
+/// [`initialize_owned`] can register.
 pub fn initialize(payer: &Pubkey, subject: &Pubkey) -> Instruction {
     let mut data = INITIALIZE.to_vec();
     data.extend_from_slice(subject.as_ref());
@@ -111,6 +223,18 @@ pub fn initialize(payer: &Pubkey, subject: &Pubkey) -> Instruction {
             AccountMeta::new(did_account(subject), false),
             AccountMeta::new_readonly(SYSTEM_PROGRAM, false),
         ],
+    )
+}
+
+/// Create the registry account for the owned subject of `authority` and
+/// `nonce`, with the authority's key as its protected `#default` method.
+/// The authority must sign; the payer may be anyone.
+pub fn initialize_owned(payer: &Pubkey, authority: &Pubkey, nonce: u64) -> Instruction {
+    let mut data = INITIALIZE_OWNED.to_vec();
+    data.extend_from_slice(&nonce.to_le_bytes());
+    instruction(
+        data,
+        update_accounts(payer, authority, &owned_subject(authority, nonce)),
     )
 }
 

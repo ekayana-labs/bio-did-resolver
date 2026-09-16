@@ -40,6 +40,7 @@ fn discriminators_are_sha256_of_instruction_names() {
             "add_verification_method_from_buffer",
         ),
         (ix::CLOSE_KEY_BUFFER, "close_key_buffer"),
+        (ix::INITIALIZE_OWNED, "initialize_owned"),
     ] {
         assert_eq!(constant, discriminator(name), "{name}");
     }
@@ -194,6 +195,52 @@ fn initialize_layout() {
         !metas[1].is_signer && metas[1].is_writable && metas[1].pubkey == ix::did_account(&subject)
     );
     assert!(!metas[2].is_signer && !metas[2].is_writable && metas[2].pubkey == ix::SYSTEM_PROGRAM);
+}
+
+/// The owned subject is the program derived address the program pins,
+/// and `initialize_owned` targets its registry account with the authority
+/// as a signer.
+#[test]
+fn initialize_owned_layout() {
+    let authority = Pubkey::new_from_array([0x11; 32]);
+    let subject = ix::owned_subject(&authority, 42);
+    assert_eq!(
+        subject.to_bytes(),
+        [
+            176, 5, 37, 51, 53, 114, 109, 56, 180, 140, 48, 89, 115, 119, 13, 138, 192, 54, 110,
+            20, 205, 247, 212, 197, 39, 52, 9, 159, 203, 10, 250, 28
+        ]
+    );
+    assert!(!subject.is_on_curve());
+    let (expected, _bump) = Pubkey::find_program_address(
+        &[b"bio-did-owned", authority.as_ref(), &42u64.to_le_bytes()],
+        &ix::program_id(),
+    );
+    assert_eq!(subject, expected);
+
+    let payer = Pubkey::new_unique();
+    let instruction = ix::initialize_owned(&payer, &authority, 42);
+    let mut data = ix::INITIALIZE_OWNED.to_vec();
+    data.extend_from_slice(&42u64.to_le_bytes());
+    assert_eq!(instruction.data, data);
+    let metas = &instruction.accounts;
+    assert_eq!(metas.len(), 4);
+    assert!(metas[0].is_signer && metas[0].is_writable && metas[0].pubkey == payer);
+    assert!(metas[1].is_signer && !metas[1].is_writable && metas[1].pubkey == authority);
+    assert!(
+        !metas[2].is_signer && metas[2].is_writable && metas[2].pubkey == ix::did_account(&subject)
+    );
+    assert!(!metas[3].is_signer && !metas[3].is_writable && metas[3].pubkey == ix::SYSTEM_PROGRAM);
+}
+
+#[test]
+fn program_errors_are_named() {
+    assert_eq!(
+        ix::program_error(6002).map(|(name, _)| name),
+        Some("InvalidFragment")
+    );
+    assert!(ix::program_error(5999).is_none());
+    assert!(ix::program_error(6018).is_none());
 }
 
 #[test]

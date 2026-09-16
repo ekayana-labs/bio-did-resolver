@@ -35,10 +35,11 @@ Prints the full DID Resolution result (`didDocument`, `didDocumentMetadata`
 with `versionId` and `updated`, `didResolutionMetadata`). The DID's network
 segment selects the cluster; `--url` overrides the RPC endpoint.
 
-A DID with no registry account resolves to its *generative* document,
-`versionId "0"`. An RPC failure is an error, never a fallback: a node that
-withholds the account must not be able to hide a key rotation or a
-deactivation.
+A key subject with no registry account resolves to its *generative*
+document, `versionId "0"`. An owned subject (see below) has no generative
+document: without an account it resolves to `notFound`. An RPC failure is
+an error, never a fallback: a node that withholds the account must not be
+able to hide a key rotation or a deactivation.
 
 ## Update the registry
 
@@ -61,11 +62,31 @@ bio-did-resolver deactivate --yes
 ```
 
 `init` is permissionless: pass another DID to sponsor its account without
-gaining any control over it.
+gaining any control over it. The subject has to be a key; the program
+refuses an address off the Ed25519 curve, since nothing could ever sign for
+it.
 
 ```console
 bio-did-resolver init did:bio:devnet:<SUBJECT> --keypair sponsor.json
 ```
+
+## Owned DIDs
+
+A DID does not have to be a key. `init-owned` derives the subject from the
+keypair and a nonce (`["bio-did-owned", authority, nonce]`, an off-curve
+program address) and creates the account with the keypair as the DID's
+protected `#default` method, so one signature names a dataset, paper or
+claim the keypair owns and pays for. The same keypair and nonce always name
+the same DID; the command prints it.
+
+```console
+bio-did-resolver init-owned 42
+bio-did-resolver add-service metadata BioMetadata ipfs://<cid> did:bio:devnet:<OWNED>
+bio-did-resolver resolve did:bio:devnet:<OWNED>
+```
+
+From then on the DID behaves like any other, pass it as the last argument
+of the update commands, since it is not the keypair's own DID.
 
 An ML-DSA-87 key is 2592 bytes and a transaction holds 1232, so
 `add-key --type ml-dsa-87` uploads the key through a key buffer: one
@@ -83,8 +104,15 @@ bio-did-resolver close-key-buffer
   compute units instead of sending it.
 - Sending to mainnet requires `--yes`.
 - `deactivate` is permanent and always requires `--yes`.
-- Key material is length checked against the key type before it leaves the
-  machine; the program enforces the same rule on chain.
+- Requests the program would refuse fail before they leave the machine,
+  with a reason: key material is length checked against the key type,
+  fragments follow the program's charset and `default` stays reserved for
+  the founding key, `capability-invocation` and `protected` are only
+  accepted on `ed25519` keys, and an `--external` controller must be a
+  `did:<method>:<id>` of another method.
+- When the program does refuse a transaction, its error is printed by name
+  and meaning (`InvalidFragment (6002), the fragment is empty, too long,
+  reserved, or contains invalid characters`) rather than as a bare code.
 
 ## Development
 
@@ -96,9 +124,9 @@ cargo clippy --all-targets -- -D warnings
 
 `tests/encoding.rs` pins the wire format independently of the program:
 discriminators recomputed from instruction names, borsh argument layout,
-account metas. `tests/parity.rs` compiles the program as a host library and
-checks that this crate, `did-bio-core`, and the program agree on every
-constant.
+account metas, the owned subject derivation. `tests/parity.rs` compiles the
+program as a host library and checks that this crate, `did-bio-core`, and
+the program agree on every constant, derivation and error code.
 
 ## License
 

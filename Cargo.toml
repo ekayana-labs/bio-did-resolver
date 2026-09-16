@@ -1,6 +1,6 @@
 [package]
 name = "bio-did-resolver"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.89.0"
 description = "Resolver and registry client for the did:bio DID method on Solana"

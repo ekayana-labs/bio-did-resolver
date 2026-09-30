@@ -6,7 +6,7 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.1.2] - 2026-10-01
+## [0.2.0] - 2026-10-01
 
 ### Added
 
@@ -24,6 +24,7 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Moved to `solana-client` 4.3 with `solana-sdk` 4.1.
 - The command enum and the option structs gained variants and fields.
 - `set-flags` checks the new flags against the method's key type before
   sending, as `add-key` already did.
@@ -55,6 +56,7 @@ adheres to [Semantic Versioning](https://semver.org/).
 First release, with `resolve`, the registry update commands and chunked
 upload of ML-DSA-87 keys through a key buffer.
 
-[Unreleased]: https://github.com/ekayana-labs/bio-did-resolver/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/ekayana-labs/bio-did-resolver/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/ekayana-labs/bio-did-resolver/releases/tag/v0.2.0
 [0.1.1]: https://github.com/ekayana-labs/bio-did-resolver/releases/tag/v0.1.1
 [0.1.0]: https://github.com/ekayana-labs/bio-did-resolver/releases/tag/v0.1.0

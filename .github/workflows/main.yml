@@ -43,7 +43,7 @@ jobs:
           bin=target/release/bio-did-resolver
           "$bin" --version
           "$bin" --help
-          for c in resolve init add-key remove-key set-flags add-service \
+          for c in resolve init init-owned add-key remove-key set-flags add-service \
                    remove-service set-controllers deactivate close-key-buffer; do
             "$bin" help "$c" > /dev/null || { echo "missing command: $c"; exit 1; }
           done

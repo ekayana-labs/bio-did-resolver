@@ -1,22 +1,23 @@
 #!/usr/bin/env bash
 # Cluster tests for the bio-did-registry program, driven through the
-# bio-did-resolver command line. Every instruction, every guard the program
-# enforces (custom error codes 6000..6014), and the resolver's use cases are
-# exercised against a live cluster with throwaway keys.
+# bio-did-resolver command line. They exercise every instruction, the
+# guards the program enforces, the checks the client makes before sending,
+# and the resolver's use cases against a live cluster with throwaway keys.
 #
 #   NET=localnet scripts/cluster-tests.sh   # solana-test-validator with the program loaded
-#   NET=devnet   scripts/cluster-tests.sh   # devnet; throwaway keys funded from FUNDER
+#   NET=devnet   scripts/cluster-tests.sh   # devnet, keys funded from FUNDER
 #
-# Environment:
+# Environment
 #   NET     localnet (default) or devnet
-#   RPC     RPC endpoint; defaults to the cluster's public endpoint
-#   BIN     resolver binary; defaults to target/release/bio-did-resolver, then PATH
-#   FUNDER  keypair that funds the throwaway keys on devnet (default: ~/.config/solana/id.json)
+#   RPC     RPC endpoint, by default the cluster's public endpoint
+#   BIN     resolver binary, by default target/release/bio-did-resolver, then PATH
+#   FUNDER  keypair that funds the throwaway keys on devnet (default ~/.config/solana/id.json)
 #   LIMITS  1 to also fill the 16 method and 16 service tables (24 extra transactions)
 #   KEEP    1 to keep the throwaway keys and leave their SOL in place
 #
-# Needs: solana, solana-keygen, jq. Every negative case runs as --dry-run, so
-# it costs nothing; the positive cases send real transactions.
+# It needs solana, solana-keygen and jq. Every negative case runs as
+# --dry-run or fails on the client, so it costs nothing. The positive cases
+# send real transactions.
 set -u
 
 NET=${NET:-localnet}
@@ -51,7 +52,7 @@ fails() { # fails <name> <expected text> <command...>: must fail and mention the
 }
 run() { "$BIN" "$@" --url "$RPC"; }
 meta() { "$BIN" resolve "$1" --url "$RPC" | jq -r '.didDocumentMetadata | "\(.versionId) \(.deactivated // false)"'; }
-# Writes confirm at `confirmed`; `resolve` reads at `finalized`, which lags by
+# Writes confirm at `confirmed` and `resolve` reads at `finalized`, which lags by
 # about 13 seconds. Poll until the finalized document shows the expected version.
 wait_version() { # wait_version <did> <version>
   local got i
@@ -78,7 +79,9 @@ fund() { # fund <pubkey> <sol>
 }
 repeat() { head -c "$1" /dev/zero | tr '\0' "$2"; }
 
-# Custom program errors as they appear in transaction logs.
+# Custom program errors as they appear in transaction logs. The client
+# catches InvalidKeyLength (6009) and the key buffer errors (6015 to 6017)
+# before sending, so no case here reaches them on chain.
 E_UNAUTHORIZED=0x1770
 E_DEACTIVATED=0x1771
 E_INVALID_FRAGMENT=0x1772
@@ -135,7 +138,7 @@ bump
 ok   "secp256k1 key with assertion" run add-key eth --type secp256k1 --key-file "$KEYS/secp256k1.bin" --flags assertion "$SUBJECT_DID" --keypair "$SUBJECT"
 bump
 # A 2592 byte ML-DSA-87 key exceeds the 1232 byte transaction limit, so the
-# client uploads it through a key buffer: create, three chunks, finish.
+# client uploads it through a key buffer in five transactions.
 ok   "ML-DSA-87 key (2592 bytes) uploaded through a key buffer" run add-key pq --type ml-dsa-87 --key-file "$KEYS/ml-dsa-87.bin" --flags assertion "$SUBJECT_DID" --keypair "$SUBJECT"
 bump
 fails "no key buffer is left behind" "Invalid account owner" run close-key-buffer "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
@@ -147,14 +150,15 @@ settle
 ok   "document lists six verification methods" test "$("$BIN" resolve "$SUBJECT_DID" --url "$RPC" | jq '.didDocument.verificationMethod | length')" = 6
 ok   "the post quantum key materializes as a JsonWebKey under assertionMethod" test "$("$BIN" resolve "$SUBJECT_DID" --url "$RPC" | jq -r '(.didDocument.verificationMethod[] | select(.id | endswith("#pq")) | .type) + "," + ([.didDocument.assertionMethod[] | select(endswith("#pq"))] | length | tostring)')" = "JsonWebKey,1"
 ok   "x25519 key appears only under keyAgreement" test "$("$BIN" resolve "$SUBJECT_DID" --url "$RPC" | jq -r '[.didDocument.keyAgreement[] | select(endswith("#kex"))] | length')" = 1
-fails "x25519 cannot authenticate" "$E_INVALID_FLAGS" run add-key bad --type x25519 --key-file "$KEYS/x25519.bin" --flags authentication "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
-fails "only ed25519 may hold capabilityInvocation" "$E_INVALID_FLAGS" run add-key bad --type secp256k1 --key-file "$KEYS/secp256k1.bin" --flags capability-invocation "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
-fails "duplicate fragment" "$E_FRAGMENT_IN_USE" run add-key default --type ed25519 --key "$ROT_PUB" --flags authentication "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
-fails "fragment with invalid characters" "$E_INVALID_FRAGMENT" run add-key "bad fragment!" --type ed25519 --key "$ROT_PUB" --flags authentication "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
-fails "fragment longer than 32" "$E_INVALID_FRAGMENT" run add-key "$(repeat 33 a)" --type ed25519 --key "$ROT_PUB" --flags authentication "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
+fails "duplicate fragment" "$E_FRAGMENT_IN_USE" run add-key rot --type ed25519 --key "$ROT_PUB" --flags authentication "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
+fails "client: x25519 cannot authenticate" "can only carry key-agreement" run add-key bad --type x25519 --key-file "$KEYS/x25519.bin" --flags authentication "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
+fails "client: only ed25519 may hold capabilityInvocation" "only ed25519 keys can hold capability-invocation" run add-key bad --type secp256k1 --key-file "$KEYS/secp256k1.bin" --flags capability-invocation "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
+fails "client: default is reserved" "reserved for the founding key" run add-key default --type ed25519 --key "$ROT_PUB" --flags authentication "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
+fails "client: fragment with invalid characters" "may only contain letters" run add-key "bad fragment!" --type ed25519 --key "$ROT_PUB" --flags authentication "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
+fails "client: fragment longer than 32" "must be 1 to 32 characters" run add-key "$(repeat 33 a)" --type ed25519 --key "$ROT_PUB" --flags authentication "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
 fails "cannot plant a protected key that is not the signer's" "$E_PROTECTED" run add-key plant --type ed25519 --key "$(pubkey "$OUTSIDER")" --flags capability-invocation,protected "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
-fails "client rejects wrong key length before sending" "keys are 32 bytes" run add-key bad --type ed25519 --key 3xyz --flags authentication "$SUBJECT_DID" --keypair "$SUBJECT"
-fails "client rejects unknown relationship names" "unknown relationship" run add-key bad --type ed25519 --key "$ROT_PUB" --flags admin "$SUBJECT_DID" --keypair "$SUBJECT"
+fails "client: wrong key length" "keys are 32 bytes" run add-key bad --type ed25519 --key 3xyz --flags authentication "$SUBJECT_DID" --keypair "$SUBJECT"
+fails "client: unknown relationship names" "unknown relationship" run add-key bad --type ed25519 --key "$ROT_PUB" --flags admin "$SUBJECT_DID" --keypair "$SUBJECT"
 
 section "set_verification_method_flags"
 ok   "authority changes an unprotected key's flags" run set-flags rot --flags authentication "$SUBJECT_DID" --keypair "$SUBJECT"
@@ -192,7 +196,8 @@ bump
 ok   "DataverseRepository service" run add-service repo DataverseRepository https://doi.org/10.5072/FK2/EXAMPLE "$SUBJECT_DID" --keypair "$SUBJECT"
 bump
 fails "duplicate service fragment" "$E_FRAGMENT_IN_USE" run add-service metadata BioMetadata ipfs://x "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
-fails "fragments are shared with verification methods" "$E_FRAGMENT_IN_USE" run add-service default BioMetadata ipfs://x "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
+fails "fragments are shared with verification methods" "$E_FRAGMENT_IN_USE" run add-service eth BioMetadata ipfs://x "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
+fails "client: services cannot take the default fragment" "reserved for the founding key" run add-service default BioMetadata ipfs://x "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
 fails "endpoint with whitespace" "$E_INVALID_SERVICE_VALUE" run add-service bad BioMetadata "ipfs://bad cid" "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
 fails "empty service type" "$E_INVALID_SERVICE_VALUE" run add-service bad "" ipfs://x "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
 fails "service type longer than 64" "$E_INVALID_SERVICE_VALUE" run add-service bad "$(repeat 65 T)" ipfs://x "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
@@ -211,10 +216,10 @@ ok   "controllers appear in the document" test "$("$BIN" resolve "$SUBJECT_DID" 
 fails "self reference" "$E_INVALID_CONTROLLER" run set-controllers --controller "$(pubkey "$SUBJECT")" "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
 fails "duplicate native controller" "$E_INVALID_CONTROLLER" run set-controllers --controller "$DATASET_PUB" --controller "$DATASET_PUB" "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
 fails "duplicate external controller" "$E_INVALID_CONTROLLER" run set-controllers --external did:web:a.example --external did:web:a.example "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
-fails "did:bio must use the native form" "$E_INVALID_CONTROLLER" run set-controllers --external "$DATASET_DID" "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
-fails "external controller must be a DID" "$E_INVALID_CONTROLLER" run set-controllers --external https://lab.example.org "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
-fails "external controller with whitespace" "$E_INVALID_CONTROLLER" run set-controllers --external "did:web:bad host" "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
-fails "external controller longer than 128" "$E_INVALID_CONTROLLER" run set-controllers --external "did:web:$(repeat 121 a)" "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
+fails "client: did:bio must use the native form" "pass it by key with --controller" run set-controllers --external "$DATASET_DID" "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
+fails "client: external controller must be a DID" "not a DID of the form" run set-controllers --external https://lab.example.org "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
+fails "client: external controller with whitespace" "printable ASCII without whitespace" run set-controllers --external "did:web:bad host" "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
+fails "client: external controller longer than 128" "must be 1 to 128 bytes" run set-controllers --external "did:web:$(repeat 121 a)" "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
 many_native=(); many_external=()
 for i in 1 2 3 4 5 6 7 8 9; do
   many_native+=(--controller "$(pubkey "$(newkey "ctrl-$i")")"); many_external+=(--external "did:web:$i.example.org")
@@ -278,6 +283,18 @@ ok   "sponsor a stranger's DID from the platform key" run init "$OUTSIDER_DID" -
 ok   "the stranger, not the sponsor, controls it" run add-service metadata BioMetadata ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi "$OUTSIDER_DID" --keypair "$OUTSIDER"
 ok   "the stranger's document reaches version 2" wait_version "$OUTSIDER_DID" 2
 ok   "service endpoint is readable through resolve" test "$("$BIN" resolve "$OUTSIDER_DID" --url "$RPC" | jq -r '.didDocument.service[0].serviceEndpoint')" = "ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi"
+
+section "initialize_owned"
+OWNED_DID=$(run init-owned 7 --keypair "$DATASET" --network "$NET" --dry-run | awk '$1 == "did" { print $2 }')
+ok   "init-owned names the DID before sending" test -n "$OWNED_DID"
+fails "an owned subject has no generative document" "notFound" "$BIN" resolve "$OWNED_DID" --url "$RPC"
+fails "client: init refuses an owned subject" "owned subject" run init "$OWNED_DID" --keypair "$SPONSOR" --dry-run
+ok   "the keypair creates its owned DID" run init-owned 7 --keypair "$DATASET" --network "$NET"
+ok   "the owned DID resolves at version 1" wait_version "$OWNED_DID" 1
+ok   "its keypair is the protected default method" test "$("$BIN" resolve "$OWNED_DID" --url "$RPC" | jq -r '.didDocument.capabilityInvocation[0]')" = "$OWNED_DID#default"
+ok   "the keypair writes to the owned DID" run add-service metadata BioMetadata ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi "$OWNED_DID" --keypair "$DATASET"
+fails "an outsider cannot write to it" "$E_UNAUTHORIZED" run add-service x T uri "$OWNED_DID" --keypair "$OUTSIDER" --dry-run
+fails "the same nonce cannot be used twice" "uninitialized account" run init-owned 7 --keypair "$DATASET" --network "$NET" --dry-run
 
 section "summary"
 if [ "$NET" = devnet ] && [ "$KEEP" != 1 ]; then

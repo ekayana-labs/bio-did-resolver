@@ -1,4 +1,5 @@
-//! `bio-did-resolver`: resolve did:bio DIDs and drive the registry program.
+//! The `bio-did-resolver` binary resolves did:bio DIDs and drives the
+//! registry program.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -41,15 +42,15 @@ fn run(cli: Cli) -> Result<()> {
             let w = Write::new(&opts)?;
             if !w.did.is_key_subject() {
                 bail!(
-                    "{} is an owned subject, not a key; its authority creates it with \
-                     `init-owned <NONCE>`",
+                    "{} is an owned subject rather than a key, and its authority creates \
+                     it with `init-owned <NONCE>`",
                     w.did
                 );
             }
             w.send("initialize", ix::initialize(&w.payer(), &w.subject))
         }
         Command::InitOwned { nonce, write } => {
-            // The DID follows from the keypair and the nonce; the keypair
+            // The DID follows from the keypair and the nonce. The keypair
             // signs as the authority and pays.
             let keypair = load_keypair(write.keypair.as_deref())?;
             let did = BioDid::owned(
@@ -160,7 +161,7 @@ fn run(cli: Cli) -> Result<()> {
         Command::Deactivate(opts) => {
             let w = Write::new(&opts)?;
             if !w.yes && !w.dry_run {
-                bail!("deactivation is permanent; pass --yes to confirm");
+                bail!("deactivation is permanent, pass --yes to confirm");
             }
             w.send(
                 "deactivate",
@@ -179,9 +180,9 @@ fn run(cli: Cli) -> Result<()> {
 
 /// Resolve a DID and print the DID Resolution result as JSON.
 ///
-/// Spec Section 6.2 step 6 permits the generative fallback only for a
-/// genuinely absent account: an RPC failure is reported as an error and
-/// never silently downgraded to the generative document.
+/// Spec Section 6.2 step 6 permits the generative fallback only for an
+/// account that is really absent. An RPC failure is reported as an error
+/// and never downgraded to the generative document.
 fn resolve(did: &str, url: Option<String>) -> Result<()> {
     let did: BioDid = did.parse().map_err(|e| anyhow!("invalid DID: {e}"))?;
     let url = url.unwrap_or_else(|| did.network.default_rpc_url().to_string());
@@ -202,8 +203,8 @@ fn resolve(did: &str, url: Option<String>) -> Result<()> {
     if let Some(code) = &resolution.resolution_metadata.error {
         if code == resolution_error::NOT_FOUND && !did.is_key_subject() {
             bail!(
-                "resolution failed: {code}; an owned subject has no generative document and \
-                 resolves once its authority runs `init-owned`"
+                "resolution failed: {code}. An owned subject has no generative document \
+                 and resolves once its authority runs `init-owned`"
             );
         }
         bail!("resolution failed: {code}");
@@ -231,8 +232,8 @@ fn describe_client_error(err: ClientError) -> anyhow::Error {
     }
 }
 
-/// Everything a write command needs: the target DID, the signing keypair,
-/// and where to send the transaction.
+/// Everything a write command needs, which is the target DID, the signing
+/// keypair and where to send the transaction.
 struct Write {
     did: BioDid,
     subject: Pubkey,
@@ -354,9 +355,9 @@ impl Write {
         Ok(())
     }
 
-    /// Add a method whose key does not fit in one transaction: open a key
-    /// buffer (or pick up the pending one), write the key in chunks, then
-    /// append the method and close the buffer. Every step is a transaction
+    /// Add a method whose key does not fit in one transaction. It opens a
+    /// key buffer or picks up the pending one, writes the key in chunks, then
+    /// appends the method and closes the buffer. Every step is a transaction
     /// of its own, so an interrupted upload resumes where it stopped.
     fn upload_key(&self, fragment: &str, key_type: KeyType, flags: u16, key: &[u8]) -> Result<()> {
         self.guard("add_verification_method_from_buffer")?;
@@ -376,13 +377,13 @@ impl Write {
                     && key.starts_with(&pending.key_data);
                 if !same {
                     bail!(
-                        "a different key upload is pending in {buffer}; \
+                        "a different key upload is pending in {buffer}, \
                          run `close-key-buffer` to discard it first"
                     );
                 }
                 if self.dry_run {
                     println!(
-                        "  a pending upload holds {} of {} bytes; a dry run does not continue it",
+                        "  a pending upload holds {} of {} bytes, which a dry run does not continue",
                         pending.written(),
                         key.len()
                     );
@@ -482,7 +483,7 @@ fn load_keypair(path: Option<&Path>) -> Result<Keypair> {
         Some(path) => path.to_path_buf(),
         None => {
             let home = std::env::var_os("HOME")
-                .ok_or_else(|| anyhow!("HOME is not set; pass --keypair"))?;
+                .ok_or_else(|| anyhow!("HOME is not set, pass --keypair"))?;
             PathBuf::from(home).join(".config/solana/id.json")
         }
     };

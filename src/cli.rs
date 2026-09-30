@@ -16,20 +16,20 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// Resolve a DID to its DID document; never writes
+    /// Resolve a DID to its DID document without writing anything
     Resolve {
         /// The did:bio DID to resolve
         did: String,
-        /// RPC endpoint; defaults to the public endpoint of the DID's cluster
+        /// RPC endpoint, by default the public endpoint of the DID's cluster
         #[arg(long, value_name = "URL")]
         url: Option<String>,
     },
-    /// Create the registry account for a DID; permissionless, any payer
+    /// Create the registry account for a DID, paid for by anyone
     Init(WriteOpts),
     /// Create an owned DID: its subject is derived from the keypair and a
     /// nonce, and the keypair controls it from the first version
     InitOwned {
-        /// Nonce that, with the keypair, names the DID; the same nonce
+        /// Nonce that names the DID together with the keypair. The same nonce
         /// always names the same DID
         nonce: u64,
         #[command(flatten)]
@@ -45,13 +45,13 @@ pub enum Command {
         /// Public key as base58
         #[arg(long, value_name = "BASE58", conflicts_with = "key_file")]
         key: Option<String>,
-        /// Public key as a raw byte file; use this for ML-DSA-87 keys, which
-        /// are uploaded in chunks through a key buffer over several
-        /// transactions and resume where they left off if interrupted
+        /// Public key as a raw byte file. Use it for ML-DSA-87 keys, which go
+        /// up in chunks through a key buffer over several transactions and
+        /// resume where they stopped if interrupted
         #[arg(long, value_name = "PATH")]
         key_file: Option<PathBuf>,
-        /// Comma separated: authentication, assertion, key-agreement,
-        /// capability-invocation, capability-delegation, protected
+        /// Comma separated list of authentication, assertion, key-agreement,
+        /// capability-invocation, capability-delegation and protected
         #[arg(long, value_name = "LIST")]
         flags: String,
         #[command(flatten)]
@@ -66,7 +66,7 @@ pub enum Command {
     /// Replace a verification method's relationship flags
     SetFlags {
         fragment: String,
-        /// Comma separated; see `add-key --flags`
+        /// Comma separated, as for `add-key --flags`
         #[arg(long, value_name = "LIST")]
         flags: String,
         #[command(flatten)]
@@ -90,16 +90,16 @@ pub enum Command {
     },
     /// Replace the controller sets
     SetControllers {
-        /// A did:bio controller, by Solana public key; repeatable
+        /// A did:bio controller given by its Solana public key, repeatable
         #[arg(long = "controller", value_name = "PUBKEY")]
         native: Vec<String>,
-        /// A controller from another DID method; repeatable
+        /// A controller from another DID method, repeatable
         #[arg(long = "external", value_name = "DID")]
         other: Vec<String>,
         #[command(flatten)]
         write: WriteOpts,
     },
-    /// Permanently deactivate a DID; requires --yes
+    /// Permanently deactivate a DID, which requires --yes
     Deactivate(WriteOpts),
     /// Discard a pending large key upload and reclaim its rent
     CloseKeyBuffer(WriteOpts),
@@ -108,7 +108,7 @@ pub enum Command {
 /// Options shared by every command that sends a transaction.
 #[derive(Args, Debug, Clone)]
 pub struct WriteOpts {
-    /// The DID to act on; defaults to the keypair's own DID on --network
+    /// The DID to act on, by default the keypair's own DID on --network
     pub did: Option<String>,
     /// Keypair that pays for the transaction and signs as update authority
     #[arg(long, value_name = "PATH")]
@@ -116,7 +116,7 @@ pub struct WriteOpts {
     /// Cluster of the keypair's own DID when no DID is given
     #[arg(long, value_enum, default_value = "devnet")]
     pub network: NetworkArg,
-    /// RPC endpoint; defaults to the public endpoint of the DID's cluster
+    /// RPC endpoint, by default the public endpoint of the DID's cluster
     #[arg(long, value_name = "URL")]
     pub url: Option<String>,
     /// Simulate the transaction and print the result instead of sending it
@@ -136,7 +136,7 @@ pub struct OwnedOpts {
     /// Cluster the DID lives on
     #[arg(long, value_enum, default_value = "devnet")]
     pub network: NetworkArg,
-    /// RPC endpoint; defaults to the public endpoint of the cluster
+    /// RPC endpoint, by default the public endpoint of the cluster
     #[arg(long, value_name = "URL")]
     pub url: Option<String>,
     /// Simulate the transaction and print the result instead of sending it
@@ -202,9 +202,8 @@ fn key_type_name(key_type: KeyType) -> &'static str {
     }
 }
 
-/// A fragment the program accepts from an instruction: 1 to 32 characters
-/// of `[A-Za-z0-9_-]`, and not `default`, which names the founding key
-/// and nothing else.
+/// Check a fragment the way the program does. It is 1 to 32 characters of
+/// `[A-Za-z0-9_-]` and never `default`, which names the founding key.
 pub fn check_fragment(fragment: &str) -> Result<(), String> {
     if fragment.is_empty() || fragment.len() > MAX_FRAGMENT_LEN {
         return Err(format!(
@@ -222,15 +221,16 @@ pub fn check_fragment(fragment: &str) -> Result<(), String> {
     }
     if fragment == DEFAULT_FRAGMENT {
         return Err(format!(
-            "`{DEFAULT_FRAGMENT}` is reserved for the founding key; pick another fragment"
+            "`{DEFAULT_FRAGMENT}` is reserved for the founding key, pick another fragment"
         ));
     }
     Ok(())
 }
 
-/// Flags the program accepts for a key type: only Ed25519 keys can sign a
-/// transaction, so only they may hold `capability-invocation` or be
-/// `protected`; an X25519 key only agrees on keys.
+/// Check flags against a key type the way the program does. Only Ed25519
+/// keys can sign a transaction, so only they may hold
+/// `capability-invocation` or be `protected`. An X25519 key only agrees on
+/// keys.
 pub fn check_flags(key_type: KeyType, flags: u16) -> Result<(), String> {
     if flags & !vm_flags::VALID_MASK != 0 {
         return Err("unknown flag bits".into());
@@ -238,13 +238,13 @@ pub fn check_flags(key_type: KeyType, flags: u16) -> Result<(), String> {
     if key_type != KeyType::Ed25519 {
         if flags & vm_flags::CAPABILITY_INVOCATION != 0 {
             return Err(format!(
-                "only ed25519 keys can hold capability-invocation; {} keys cannot sign a transaction",
+                "only ed25519 keys can hold capability-invocation, since {} keys cannot sign a transaction",
                 key_type_name(key_type)
             ));
         }
         if flags & vm_flags::PROTECTED != 0 {
             return Err(format!(
-                "only ed25519 keys can be protected; {} keys cannot sign for themselves",
+                "only ed25519 keys can be protected, since {} keys cannot sign for themselves",
                 key_type_name(key_type)
             ));
         }
@@ -257,9 +257,9 @@ pub fn check_flags(key_type: KeyType, flags: u16) -> Result<(), String> {
     Ok(())
 }
 
-/// An external controller as the program accepts it: `did:<method>:<id>`
-/// with a lowercase alphanumeric method name and a non-empty id, in
-/// printable ASCII of at most 128 bytes. did:bio controllers are passed by
+/// Check an external controller the way the program does. It is a
+/// `did:<method>:<id>` with a lowercase alphanumeric method and a non-empty
+/// id, in printable ASCII of at most 128 bytes. did:bio controllers are passed by
 /// key with `--controller` instead.
 pub fn check_external_controller(did: &str) -> Result<(), String> {
     if did.is_empty() || did.len() > MAX_CONTROLLER_LEN {
@@ -288,7 +288,7 @@ pub fn check_external_controller(did: &str) -> Result<(), String> {
             "controller `{did}` is not a DID of the form did:<method>:<id>"
         )),
         Some(("bio", _)) => Err(format!(
-            "`{did}` is a did:bio; pass it by key with --controller instead"
+            "`{did}` is a did:bio, pass it by key with --controller instead"
         )),
         Some(_) => Ok(()),
     }

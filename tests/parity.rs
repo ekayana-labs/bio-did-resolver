@@ -1,6 +1,7 @@
-//! Parity between the three crates that must agree on the wire format:
-//! this resolver, `did-bio-core`, and the on-chain program. The program
-//! is the source of truth; if it changes, these fail before anything ships.
+//! Parity between the three crates that must agree on the wire format,
+//! which are this resolver, `did-bio-core` and the on-chain program. The
+//! program is the source of truth, so when it changes these fail before
+//! anything ships.
 
 use bio_did_registry::error::DidError;
 use bio_did_registry::{ix as program_ix, state as program, ID};
@@ -125,9 +126,9 @@ fn program_errors_match_the_program() {
     }
 }
 
-/// The three derivations of an owned subject agree: this crate, the
-/// resolver library, and the program, on the golden vector the program
-/// pins and on arbitrary inputs.
+/// This crate, the resolver library and the program derive the same owned
+/// subject, both for the golden vector the program pins and for arbitrary
+/// inputs.
 #[test]
 fn owned_subjects_match_the_program() {
     let authority = [0x11u8; 32];

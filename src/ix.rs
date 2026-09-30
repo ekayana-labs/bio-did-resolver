@@ -1,8 +1,8 @@
 //! Instruction encoding for the did:bio registry program.
 //!
 //! The program ships no client side builders, so the wire format lives
-//! here: an 8 byte discriminator, `sha256("global:<name>")[..8]`, followed
-//! by the borsh encoded arguments. The tests recompute every discriminator
+//! here. Each instruction is an 8 byte discriminator,
+//! `sha256("global:<name>")[..8]`, followed by the borsh encoded arguments. The tests recompute every discriminator
 //! from its name and pin the encoded bytes.
 
 use did_bio_core::account::PROGRAM_ID;
@@ -133,8 +133,8 @@ pub fn program_error(code: u32) -> Option<(&'static str, &'static str)> {
 /// through a key buffer, because a transaction holds at most 1232 bytes.
 pub const MAX_INLINE_KEY_LEN: usize = 768;
 
-/// Chunk size for `write_key_buffer`: keeps every chunk transaction under
-/// the packet limit even with a separate fee payer. ML-DSA-87 takes three.
+/// Chunk size for `write_key_buffer`. It keeps every chunk transaction
+/// under the packet limit even with a separate fee payer. ML-DSA-87 takes three.
 pub const KEY_CHUNK_LEN: usize = 900;
 
 /// The registry program ID.
@@ -142,7 +142,7 @@ pub fn program_id() -> Pubkey {
     Pubkey::new_from_array(PROGRAM_ID)
 }
 
-/// The registry account for a subject key: `["bio-did", subject]`.
+/// The registry account for a subject key, `["bio-did", subject]`.
 pub fn did_account(subject: &Pubkey) -> Pubkey {
     let (address, _bump) = did_bio_core::find_did_account_address(&subject.to_bytes());
     Pubkey::new_from_array(address)
@@ -156,7 +156,7 @@ pub fn owned_subject(authority: &Pubkey, nonce: u64) -> Pubkey {
 }
 
 /// The key buffer through which `authority` uploads a large key into the
-/// subject's registry account: `["bio-did-key", did_account, authority]`.
+/// subject's registry account, `["bio-did-key", did_account, authority]`.
 pub fn key_buffer(subject: &Pubkey, authority: &Pubkey) -> Pubkey {
     let (address, _bump) = did_bio_core::find_key_buffer_address(
         &did_account(subject).to_bytes(),
@@ -168,7 +168,7 @@ pub fn key_buffer(subject: &Pubkey, authority: &Pubkey) -> Pubkey {
 /// A verification method as the program receives it.
 pub struct VerificationMethod<'a> {
     pub fragment: &'a str,
-    /// On chain key type tag; see `did_bio_core::account::KeyType`.
+    /// On chain key type tag from `did_bio_core::account::KeyType`.
     pub key_type: u8,
     pub flags: u16,
     pub key: &'a [u8],
@@ -210,8 +210,8 @@ fn update_accounts(payer: &Pubkey, authority: &Pubkey, subject: &Pubkey) -> Vec<
 }
 
 /// Create the registry account holding the generative document.
-/// Permissionless: the payer need not be the subject. The subject must be
-/// a key, the program refuses an off-curve address, which only
+/// Anyone may pay, and the payer need not be the subject. The subject must
+/// be a key. The program refuses an off-curve address, which only
 /// [`initialize_owned`] can register.
 pub fn initialize(payer: &Pubkey, subject: &Pubkey) -> Instruction {
     let mut data = INITIALIZE.to_vec();
@@ -228,7 +228,7 @@ pub fn initialize(payer: &Pubkey, subject: &Pubkey) -> Instruction {
 
 /// Create the registry account for the owned subject of `authority` and
 /// `nonce`, with the authority's key as its protected `#default` method.
-/// The authority must sign; the payer may be anyone.
+/// The authority must sign, and the payer may be anyone.
 pub fn initialize_owned(payer: &Pubkey, authority: &Pubkey, nonce: u64) -> Instruction {
     let mut data = INITIALIZE_OWNED.to_vec();
     data.extend_from_slice(&nonce.to_le_bytes());

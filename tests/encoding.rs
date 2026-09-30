@@ -1,6 +1,6 @@
 //! The wire format the resolver produces, pinned independently of the
-//! program: discriminators recomputed from instruction names, borsh
-//! argument layout, and account metas.
+//! program. The tests recompute discriminators from instruction names and
+//! pin the borsh argument layout and the account metas.
 
 use std::str::FromStr;
 

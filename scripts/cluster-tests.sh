@@ -283,10 +283,28 @@ ok   "sponsor a stranger's DID from the platform key" run init "$OUTSIDER_DID" -
 ok   "the stranger, not the sponsor, controls it" run add-service metadata BioMetadata ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi "$OUTSIDER_DID" --keypair "$OUTSIDER"
 ok   "the stranger's document reaches version 2" wait_version "$OUTSIDER_DID" 2
 ok   "service endpoint is readable through resolve" test "$("$BIN" resolve "$OUTSIDER_DID" --url "$RPC" | jq -r '.didDocument.service[0].serviceEndpoint')" = "ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi"
+ok   "resolve reads at confirmed on request" test "$("$BIN" resolve "$OUTSIDER_DID" --url "$RPC" --commitment confirmed | jq -r '.didDocumentMetadata.versionId')" = 2
+
+section "dereference, sign and verify"
+ok   "did prints the keypair's DID without the network" test "$("$BIN" did --keypair "$DATASET" --network "$NET" | awk '$1 == "did" { print $2 }')" = "$DATASET_DID"
+ok   "a key fragment dereferences to its method" test "$("$BIN" dereference "$DATASET_DID#default" --url "$RPC" | jq -r '.type')" = Multikey
+ok   "a service fragment dereferences to its service" test "$("$BIN" dereference "$OUTSIDER_DID#metadata" --url "$RPC" | jq -r '.serviceEndpoint')" = "ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi"
+ok   "a DID URL without a fragment dereferences to the document" test "$("$BIN" dereference "$DATASET_DID" --url "$RPC" | jq -r '.id')" = "$DATASET_DID"
+fails "an unknown fragment" "notFound" "$BIN" dereference "$DATASET_DID#nope" --url "$RPC"
+fails "a deactivated DID has no methods left" "notFound" "$BIN" dereference "$SUBJECT_DID#default" --url "$RPC"
+SIG=$("$BIN" sign --message challenge --keypair "$DATASET")
+ok   "the default key's signature verifies" "$BIN" verify "$DATASET_DID#default" --message challenge --signature "$SIG" --url "$RPC"
+ok   "it verifies under capabilityInvocation too" "$BIN" verify "$DATASET_DID#default" --message challenge --signature "$SIG" --relationship capability-invocation --url "$RPC"
+fails "another message is rejected" "signature rejected" "$BIN" verify "$DATASET_DID#default" --message other --signature "$SIG" --url "$RPC"
+fails "another DID's key is rejected" "signature rejected" "$BIN" verify "$OUTSIDER_DID#default" --message challenge --signature "$SIG" --url "$RPC"
+fails "verify needs a fragment" "name the signing method" "$BIN" verify "$DATASET_DID" --message challenge --signature "$SIG" --url "$RPC"
+ok   "--json prints one object for a dry run" bash -c "$(printf '%q ' "$BIN" add-service x T https://example.org "$DATASET_DID" --keypair "$DATASET" --url "$RPC" --dry-run --json) | jq -e '.ok and .dryRun and (.computeUnits | length) == 1' >/dev/null"
+ok   "--json reports a refusal with its error" bash -c "! $(printf '%q ' "$BIN" add-service x T https://example.org "$DATASET_DID" --keypair "$OUTSIDER" --url "$RPC" --dry-run --json) > $KEYS/refusal.json && jq -e '(.ok | not) and (.error | contains(\"Unauthorized\"))' $KEYS/refusal.json >/dev/null"
 
 section "initialize_owned"
 OWNED_DID=$(run init-owned 7 --keypair "$DATASET" --network "$NET" --dry-run | awk '$1 == "did" { print $2 }')
 ok   "init-owned names the DID before sending" test -n "$OWNED_DID"
+ok   "did --owned derives the same DID offline" test "$("$BIN" did --keypair "$DATASET" --network "$NET" --owned 7 | awk '$1 == "did" { print $2 }')" = "$OWNED_DID"
 fails "an owned subject has no generative document" "notFound" "$BIN" resolve "$OWNED_DID" --url "$RPC"
 fails "client: init refuses an owned subject" "owned subject" run init "$OWNED_DID" --keypair "$SPONSOR" --dry-run
 ok   "the keypair creates its owned DID" run init-owned 7 --keypair "$DATASET" --network "$NET"

@@ -6,8 +6,25 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-01
+
+### Added
+
+- `dereference <did-url>` prints the verification method or service a DID
+  URL names, or the whole document without a fragment.
+- `verify <did-url>` checks a signature against a method in the resolved
+  document and the relationship it must hold. It handles Ed25519 and
+  ML-DSA-87 methods through `did-bio-core`'s `verify` feature.
+- `sign` signs a message with a Solana keypair and prints the signature.
+- `did` prints a keypair's DID and registry account, or with `--owned` the
+  owned DID for a nonce, without touching the network.
+- `--commitment` chooses `finalized` or `confirmed` for the read commands.
+- `--json` on every write command prints one JSON object with the
+  signatures, explorer links, logs and compute units.
+
 ### Changed
 
+- The command enum and the option structs gained variants and fields.
 - `set-flags` checks the new flags against the method's key type before
   sending, as `add-key` already did.
 - `init-owned` reads the keypair file once.

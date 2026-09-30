@@ -64,6 +64,41 @@ error and never falls back to the generative document. A node that
 withheld the account could otherwise hide a key rotation or a
 deactivation.
 
+Reads use `finalized` commitment, as the spec recommends. Pass
+`--commitment confirmed` to see a write about 13 seconds sooner, at the
+risk of a one slot rollback.
+
+## Dereference, sign and verify
+
+`dereference` resolves the DID of a DID URL and prints what its fragment
+names. That is a verification method or a service, since fragments are
+unique across both. Without a fragment it prints the whole document.
+
+```console
+bio-did-resolver dereference did:bio:devnet:<ID>#default
+bio-did-resolver dereference did:bio:devnet:<ID>#metadata
+```
+
+`verify` checks that the method a DID URL names signed a message and holds
+a verification relationship in the resolved document, `authentication` by
+default. It handles Ed25519 and ML-DSA-87 methods. `sign` produces a
+signature with a Solana keypair to test against.
+
+```console
+SIG=$(bio-did-resolver sign --message challenge)
+bio-did-resolver verify did:bio:devnet:<ID>#default --message challenge --signature "$SIG"
+bio-did-resolver verify did:bio:devnet:<ID>#pq --message-file doc.bin --signature-file doc.sig --relationship assertion-method
+```
+
+`did` prints a keypair's DID and registry account without touching the
+network. With `--owned <NONCE>` it prints the owned DID that `init-owned`
+would create.
+
+```console
+bio-did-resolver did
+bio-did-resolver did --owned 42
+```
+
 ## Update the registry
 
 | Command | What it sends |
@@ -139,6 +174,8 @@ bio-did-resolver close-key-buffer
 
 - `--dry-run` simulates the transaction and prints the program logs and
   compute units instead of sending it.
+- `--json` prints one JSON object per command, with the signatures,
+  explorer links, logs and compute units, and the error when it fails.
 - Sending to mainnet requires `--yes`.
 - `deactivate` is permanent and always requires `--yes`.
 - Requests the program would refuse fail before they leave the machine,

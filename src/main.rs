@@ -1,15 +1,20 @@
-//! `bio-did-resolver`: resolve did:bio DIDs and drive the registry program.
+//! The `bio-did-resolver` binary resolves did:bio DIDs and drives the
+//! registry program.
 
+use std::cell::RefCell;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
-use did_bio_core::account::KeyType;
+use did_bio_core::account::{DidAccountState, KeyType, StoredVerificationMethod};
+use did_bio_core::verify::verify_for_relationship;
 use did_bio_core::{
-    resolution_error, resolve_from_account, BioDid, KeyBufferState, Network, RawAccount,
+    resolution_error, resolve_from_account, BioDid, DidDocument, DidResolution, DidUrl,
+    KeyBufferState, Network, RawAccount,
 };
+use serde_json::{json, Value};
 use solana_client::client_error::ClientError;
 use solana_client::rpc_client::RpcClient;
 use solana_commitment_config::CommitmentConfig;
@@ -19,8 +24,8 @@ use solana_sdk::signature::{read_keypair_file, Keypair, Signer};
 use solana_sdk::transaction::{Transaction, TransactionError};
 
 use bio_did_resolver::cli::{
-    check_external_controller, check_flags, check_fragment, parse_flags, Cli, Command, NetworkArg,
-    WriteOpts,
+    check_external_controller, check_flags, check_fragment, parse_flags, Cli, Command,
+    CommitmentArg, NetworkArg, ReadOpts, RelationshipArg, WriteOpts,
 };
 use bio_did_resolver::ix;
 
@@ -36,20 +41,76 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> Result<()> {
     match cli.command {
-        Command::Resolve { did, url } => resolve(&did, url),
+        Command::Resolve { did, read } => resolve(&did, &read),
+        Command::Dereference { did_url, read } => dereference(&did_url, &read),
+        Command::Verify {
+            did_url,
+            message,
+            message_file,
+            signature,
+            signature_file,
+            relationship,
+            read,
+        } => {
+            let message = load_message(message, message_file.as_deref())?;
+            let signature = match (signature, signature_file) {
+                (Some(text), None) => bs58::decode(&text)
+                    .into_vec()
+                    .map_err(|e| anyhow!("--signature is not valid base58: {e}"))?,
+                (None, Some(path)) => {
+                    fs::read(&path).with_context(|| format!("reading {}", path.display()))?
+                }
+                _ => bail!("pass exactly one of --signature or --signature-file"),
+            };
+            verify(&did_url, &message, &signature, relationship, &read)
+        }
+        Command::Sign {
+            message,
+            message_file,
+            keypair,
+        } => {
+            let message = load_message(message, message_file.as_deref())?;
+            let keypair = load_keypair(keypair.as_deref())?;
+            println!("{}", keypair.sign_message(&message));
+            Ok(())
+        }
+        Command::Did {
+            owned,
+            keypair,
+            network,
+        } => {
+            // Everything here is derived locally, so no RPC endpoint is needed.
+            let keypair = load_keypair(keypair.as_deref())?;
+            let authority = keypair.pubkey();
+            let network = network_of(network);
+            let did = match owned {
+                Some(nonce) => BioDid::owned(network, &authority.to_bytes(), nonce),
+                None => BioDid::new(network, authority.to_bytes()),
+            };
+            println!("did      {did}");
+            println!(
+                "account  {}",
+                ix::did_account(&Pubkey::new_from_array(did.subject))
+            );
+            println!("key      {authority}");
+            if let Some(nonce) = owned {
+                println!("nonce    {nonce}");
+            }
+            Ok(())
+        }
         Command::Init(opts) => {
             let w = Write::new(&opts)?;
             if !w.did.is_key_subject() {
                 bail!(
-                    "{} is an owned subject, not a key; its authority creates it with \
-                     `init-owned <NONCE>`",
+                    "{} is an owned subject rather than a key, and its authority creates \
+                     it with `init-owned <NONCE>`",
                     w.did
                 );
             }
             w.send("initialize", ix::initialize(&w.payer(), &w.subject))
         }
         Command::InitOwned { nonce, write } => {
-            // The DID follows from the keypair and the nonce; the keypair
+            // The DID follows from the keypair and the nonce. The keypair
             // signs as the authority and pays.
             let keypair = load_keypair(write.keypair.as_deref())?;
             let did = BioDid::owned(
@@ -57,7 +118,7 @@ fn run(cli: Cli) -> Result<()> {
                 &keypair.pubkey().to_bytes(),
                 nonce,
             );
-            let w = Write::new(&write.for_did(did.to_string()))?;
+            let w = Write::with_keypair(&write.for_did(did.to_string()), keypair)?;
             w.send_with(
                 "initialize_owned",
                 &[("nonce", nonce.to_string())],
@@ -79,7 +140,7 @@ fn run(cli: Cli) -> Result<()> {
             let flags = parse_flags(&flags).map_err(|e| anyhow!(e))?;
             check_flags(key_type, flags).map_err(|e| anyhow!(e))?;
             if key.len() > ix::MAX_INLINE_KEY_LEN {
-                return w.upload_key(&fragment, key_type, flags, &key);
+                return w.finish(w.upload_key(&fragment, key_type, flags, &key));
             }
             let vm = ix::VerificationMethod {
                 fragment: &fragment,
@@ -106,6 +167,11 @@ fn run(cli: Cli) -> Result<()> {
         } => {
             let w = Write::new(&write)?;
             let flags = parse_flags(&flags).map_err(|e| anyhow!(e))?;
+            // Check the flags against the method's key type, as add-key does.
+            // An unknown method is left for the program to report.
+            if let Some(method) = w.stored_method(&fragment)? {
+                check_flags(method.method_type, flags).map_err(|e| anyhow!(e))?;
+            }
             w.send(
                 "set_verification_method_flags",
                 ix::set_verification_method_flags(&w.payer(), &w.subject, &fragment, flags),
@@ -160,7 +226,7 @@ fn run(cli: Cli) -> Result<()> {
         Command::Deactivate(opts) => {
             let w = Write::new(&opts)?;
             if !w.yes && !w.dry_run {
-                bail!("deactivation is permanent; pass --yes to confirm");
+                bail!("deactivation is permanent, pass --yes to confirm");
             }
             w.send(
                 "deactivate",
@@ -177,38 +243,134 @@ fn run(cli: Cli) -> Result<()> {
     }
 }
 
-/// Resolve a DID and print the DID Resolution result as JSON.
-///
-/// Spec Section 6.2 step 6 permits the generative fallback only for a
-/// genuinely absent account: an RPC failure is reported as an error and
-/// never silently downgraded to the generative document.
-fn resolve(did: &str, url: Option<String>) -> Result<()> {
-    let did: BioDid = did.parse().map_err(|e| anyhow!("invalid DID: {e}"))?;
-    let url = url.unwrap_or_else(|| did.network.default_rpc_url().to_string());
-    let client = RpcClient::new_with_commitment(url, CommitmentConfig::finalized());
-    let address = ix::did_account(&Pubkey::new_from_array(did.subject));
+fn commitment_of(arg: CommitmentArg) -> CommitmentConfig {
+    match arg {
+        CommitmentArg::Finalized => CommitmentConfig::finalized(),
+        CommitmentArg::Confirmed => CommitmentConfig::confirmed(),
+    }
+}
 
+/// Fetch the registry account for `did` and run the resolution algorithm
+/// on it.
+///
+/// Spec Section 6.2 step 6 permits the generative fallback only for an
+/// account that is really absent. An RPC failure is reported as an error
+/// and never downgraded to the generative document.
+fn fetch_resolution(did: &BioDid, read: &ReadOpts) -> Result<DidResolution> {
+    let url = read
+        .url
+        .clone()
+        .unwrap_or_else(|| did.network.default_rpc_url().to_string());
+    let commitment = commitment_of(read.commitment);
+    let client = RpcClient::new_with_commitment(url, commitment);
+    let address = ix::did_account(&Pubkey::new_from_array(did.subject));
     let account = client
-        .get_account_with_commitment(&address, CommitmentConfig::finalized())
+        .get_account_with_commitment(&address, commitment)
         .context("fetching the registry account")?
         .value
         .map(|account| RawAccount {
             owner: account.owner.to_bytes(),
             data: account.data,
         });
+    Ok(resolve_from_account(did, account.as_ref()))
+}
 
-    let resolution = resolve_from_account(&did, account.as_ref());
-    println!("{}", serde_json::to_string_pretty(&resolution)?);
+/// The document of a successful resolution, or the resolution error.
+fn document_of(did: &BioDid, resolution: DidResolution) -> Result<DidDocument> {
     if let Some(code) = &resolution.resolution_metadata.error {
         if code == resolution_error::NOT_FOUND && !did.is_key_subject() {
             bail!(
-                "resolution failed: {code}; an owned subject has no generative document and \
-                 resolves once its authority runs `init-owned`"
+                "resolution failed: {code}. An owned subject has no generative document \
+                 and resolves once its authority runs `init-owned`"
             );
         }
         bail!("resolution failed: {code}");
     }
+    resolution
+        .document
+        .ok_or_else(|| anyhow!("resolution returned no document"))
+}
+
+/// Resolve a DID and print the DID Resolution result as JSON.
+fn resolve(did: &str, read: &ReadOpts) -> Result<()> {
+    let did: BioDid = did.parse().map_err(|e| anyhow!("invalid DID: {e}"))?;
+    let resolution = fetch_resolution(&did, read)?;
+    println!("{}", serde_json::to_string_pretty(&resolution)?);
+    document_of(&did, resolution).map(|_| ())
+}
+
+/// Resolve the DID of a DID URL and print what its fragment names.
+fn dereference(did_url: &str, read: &ReadOpts) -> Result<()> {
+    let url = DidUrl::parse(did_url).map_err(|e| anyhow!("{e}"))?;
+    let document = document_of(&url.did, fetch_resolution(&url.did, read)?)?;
+    let value = match &url.fragment {
+        None => serde_json::to_value(&document)?,
+        Some(fragment) => fragment_of(&document, fragment).ok_or_else(|| {
+            anyhow!(
+                "dereferencing failed: notFound, {did_url} names no verification method or service"
+            )
+        })?,
+    };
+    println!("{}", serde_json::to_string_pretty(&value)?);
     Ok(())
+}
+
+/// The verification method or service a fragment names. Fragments are
+/// unique across both, so at most one matches (spec Section 5.4).
+fn fragment_of(document: &DidDocument, fragment: &str) -> Option<Value> {
+    if let Some(method) = document.verification_method_by_fragment(fragment) {
+        return serde_json::to_value(method).ok();
+    }
+    document
+        .service_by_fragment(fragment)
+        .and_then(|service| serde_json::to_value(service).ok())
+}
+
+/// The W3C name of a verification relationship.
+fn relationship_name(relationship: RelationshipArg) -> &'static str {
+    match relationship {
+        RelationshipArg::Authentication => "authentication",
+        RelationshipArg::AssertionMethod => "assertionMethod",
+        RelationshipArg::KeyAgreement => "keyAgreement",
+        RelationshipArg::CapabilityInvocation => "capabilityInvocation",
+        RelationshipArg::CapabilityDelegation => "capabilityDelegation",
+    }
+}
+
+/// Check that the method a DID URL names holds `relationship` in the
+/// resolved document and signed `message`.
+fn verify(
+    did_url: &str,
+    message: &[u8],
+    signature: &[u8],
+    relationship: RelationshipArg,
+    read: &ReadOpts,
+) -> Result<()> {
+    let url = DidUrl::parse(did_url).map_err(|e| anyhow!("{e}"))?;
+    let Some(fragment) = &url.fragment else {
+        bail!(
+            "name the signing method with a fragment, for example {}#default",
+            url.did
+        );
+    };
+    let document = document_of(&url.did, fetch_resolution(&url.did, read)?)?;
+    verify_signature(&document, fragment, relationship, message, signature)?;
+    println!(
+        "valid  {did_url} signed the message under {}",
+        relationship_name(relationship)
+    );
+    Ok(())
+}
+
+fn verify_signature(
+    document: &DidDocument,
+    fragment: &str,
+    relationship: RelationshipArg,
+    message: &[u8],
+    signature: &[u8],
+) -> Result<()> {
+    verify_for_relationship(document, relationship.into(), fragment, message, signature)
+        .map_err(|e| anyhow!("signature rejected: {e}"))
 }
 
 /// A transaction error with the registry's own errors spelled out, so a
@@ -231,8 +393,19 @@ fn describe_client_error(err: ClientError) -> anyhow::Error {
     }
 }
 
-/// Everything a write command needs: the target DID, the signing keypair,
-/// and where to send the transaction.
+/// What a write command did, collected for `--json`.
+#[derive(Default)]
+struct Report {
+    action: String,
+    details: serde_json::Map<String, Value>,
+    steps: Vec<String>,
+    logs: Vec<String>,
+    compute_units: Vec<u64>,
+    signatures: Vec<Value>,
+}
+
+/// Everything a write command needs, which is the target DID, the signing
+/// keypair and where to send the transaction.
 struct Write {
     did: BioDid,
     subject: Pubkey,
@@ -240,11 +413,17 @@ struct Write {
     url: String,
     dry_run: bool,
     yes: bool,
+    json: bool,
+    report: RefCell<Report>,
 }
 
 impl Write {
     fn new(opts: &WriteOpts) -> Result<Self> {
-        let keypair = load_keypair(opts.keypair.as_deref())?;
+        Self::with_keypair(opts, load_keypair(opts.keypair.as_deref())?)
+    }
+
+    /// [`Write::new`] with a keypair the caller has already loaded.
+    fn with_keypair(opts: &WriteOpts, keypair: Keypair) -> Result<Self> {
         let did = match &opts.did {
             Some(did) => did
                 .parse::<BioDid>()
@@ -262,6 +441,8 @@ impl Write {
             url,
             dry_run: opts.dry_run,
             yes: opts.yes,
+            json: opts.json,
+            report: RefCell::default(),
         })
     }
 
@@ -282,12 +463,14 @@ impl Write {
         details: &[(&str, String)],
         instruction: Instruction,
     ) -> Result<()> {
-        self.guard(action)?;
-        self.announce(action);
-        for (label, value) in details {
-            println!("  {label:<8} {value}");
-        }
-        self.execute(&self.client(), instruction)
+        let result = self.guard(action).and_then(|()| {
+            self.announce(action);
+            for (label, value) in details {
+                self.detail(label, value.clone());
+            }
+            self.execute(&self.client(), instruction)
+        });
+        self.finish(result)
     }
 
     /// Mainnet needs an explicit --yes unless only simulating.
@@ -299,11 +482,66 @@ impl Write {
     }
 
     fn announce(&self, action: &str) {
+        if self.json {
+            self.report.borrow_mut().action = action.to_string();
+            return;
+        }
         println!("{action}");
         println!("  did      {}", self.did);
         println!("  account  {}", ix::did_account(&self.subject));
         println!("  signer   {}", self.keypair.pubkey());
         println!("  rpc      {}", self.url);
+    }
+
+    fn detail(&self, label: &str, value: String) {
+        if self.json {
+            self.report
+                .borrow_mut()
+                .details
+                .insert(label.to_string(), Value::String(value));
+        } else {
+            println!("  {label:<8} {value}");
+        }
+    }
+
+    /// A progress line of a multi-transaction write.
+    fn step(&self, text: String) {
+        if self.json {
+            self.report.borrow_mut().steps.push(text);
+        } else {
+            println!("  {text}");
+        }
+    }
+
+    /// Print the collected report under --json, with the error if the write
+    /// failed, and pass the result on.
+    fn finish(&self, result: Result<()>) -> Result<()> {
+        if self.json {
+            let report = self.report.take();
+            let mut out = json!({
+                "action": report.action,
+                "did": self.did.to_string(),
+                "account": ix::did_account(&self.subject).to_string(),
+                "signer": self.keypair.pubkey().to_string(),
+                "rpc": self.url,
+                "dryRun": self.dry_run,
+                "ok": result.is_ok(),
+                "signatures": report.signatures,
+                "logs": report.logs,
+                "computeUnits": report.compute_units,
+            });
+            if !report.details.is_empty() {
+                out["details"] = Value::Object(report.details);
+            }
+            if !report.steps.is_empty() {
+                out["steps"] = json!(report.steps);
+            }
+            if let Err(e) = &result {
+                out["error"] = Value::String(format!("{e:#}"));
+            }
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        }
+        result
     }
 
     fn client(&self) -> RpcClient {
@@ -327,11 +565,18 @@ impl Write {
                 .simulate_transaction(&tx)
                 .context("simulating the transaction")?
                 .value;
-            for line in result.logs.unwrap_or_default() {
-                println!("  {line}");
-            }
-            if let Some(units) = result.units_consumed {
-                println!("  compute units {units}");
+            let logs = result.logs.unwrap_or_default();
+            if self.json {
+                let mut report = self.report.borrow_mut();
+                report.logs.extend(logs);
+                report.compute_units.extend(result.units_consumed);
+            } else {
+                for line in logs {
+                    println!("  {line}");
+                }
+                if let Some(units) = result.units_consumed {
+                    println!("  compute units {units}");
+                }
             }
             return match result.err {
                 Some(err) => Err(anyhow!(
@@ -346,17 +591,22 @@ impl Write {
             .send_and_confirm_transaction(&tx)
             .map_err(describe_client_error)
             .context("sending the transaction")?;
-        println!("  signature {signature}");
-        println!(
-            "  {}",
-            explorer_url(self.did.network, &signature.to_string())
-        );
+        let explorer = explorer_url(self.did.network, &signature.to_string(), &self.url);
+        if self.json {
+            self.report.borrow_mut().signatures.push(json!({
+                "signature": signature.to_string(),
+                "explorer": explorer,
+            }));
+        } else {
+            println!("  signature {signature}");
+            println!("  {explorer}");
+        }
         Ok(())
     }
 
-    /// Add a method whose key does not fit in one transaction: open a key
-    /// buffer (or pick up the pending one), write the key in chunks, then
-    /// append the method and close the buffer. Every step is a transaction
+    /// Add a method whose key does not fit in one transaction. It opens a
+    /// key buffer or picks up the pending one, writes the key in chunks, then
+    /// appends the method and closes the buffer. Every step is a transaction
     /// of its own, so an interrupted upload resumes where it stopped.
     fn upload_key(&self, fragment: &str, key_type: KeyType, flags: u16, key: &[u8]) -> Result<()> {
         self.guard("add_verification_method_from_buffer")?;
@@ -364,7 +614,7 @@ impl Write {
         let client = self.client();
         let payer = self.payer();
         let buffer = ix::key_buffer(&self.subject, &payer);
-        println!("  buffer   {buffer}");
+        self.detail("buffer", buffer.to_string());
         let chunks = key.len().div_ceil(ix::KEY_CHUNK_LEN);
 
         let written = match self.pending_upload(&client, &buffer)? {
@@ -376,23 +626,27 @@ impl Write {
                     && key.starts_with(&pending.key_data);
                 if !same {
                     bail!(
-                        "a different key upload is pending in {buffer}; \
+                        "a different key upload is pending in {buffer}, \
                          run `close-key-buffer` to discard it first"
                     );
                 }
                 if self.dry_run {
-                    println!(
-                        "  a pending upload holds {} of {} bytes; a dry run does not continue it",
+                    self.step(format!(
+                        "a pending upload holds {} of {} bytes, which a dry run does not continue",
                         pending.written(),
                         key.len()
-                    );
+                    ));
                     return Ok(());
                 }
-                println!("  resuming at byte {} of {}", pending.written(), key.len());
+                self.step(format!(
+                    "resuming at byte {} of {}",
+                    pending.written(),
+                    key.len()
+                ));
                 pending.written()
             }
             None => {
-                println!("  create_key_buffer");
+                self.step("create_key_buffer".to_string());
                 self.execute(
                     &client,
                     ix::create_key_buffer(
@@ -406,11 +660,11 @@ impl Write {
                     ),
                 )?;
                 if self.dry_run {
-                    println!(
-                        "  dry run: would then send {chunks} write_key_buffer chunks of up to {} \
+                    self.step(format!(
+                        "dry run: would then send {chunks} write_key_buffer chunks of up to {} \
                          bytes and add_verification_method_from_buffer",
                         ix::KEY_CHUNK_LEN
-                    );
+                    ));
                     return Ok(());
                 }
                 0
@@ -419,21 +673,40 @@ impl Write {
 
         for (i, chunk) in key[written..].chunks(ix::KEY_CHUNK_LEN).enumerate() {
             let offset = written + i * ix::KEY_CHUNK_LEN;
-            println!(
-                "  write_key_buffer bytes {offset}..{} of {}",
+            self.step(format!(
+                "write_key_buffer bytes {offset}..{} of {}",
                 offset + chunk.len(),
                 key.len()
-            );
+            ));
             self.execute(
                 &client,
                 ix::write_key_buffer(&payer, &self.subject, offset as u32, chunk),
             )?;
         }
-        println!("  add_verification_method_from_buffer");
+        self.step("add_verification_method_from_buffer".to_string());
         self.execute(
             &client,
             ix::add_verification_method_from_buffer(&payer, &payer, &self.subject),
         )
+    }
+
+    /// The verification method `fragment` as the registry stores it now, if
+    /// the account and the method exist.
+    fn stored_method(&self, fragment: &str) -> Result<Option<StoredVerificationMethod>> {
+        let account = self
+            .client()
+            .get_account_with_commitment(
+                &ix::did_account(&self.subject),
+                CommitmentConfig::confirmed(),
+            )
+            .context("fetching the registry account")?
+            .value;
+        let Some(account) = account.filter(|account| account.owner == ix::program_id()) else {
+            return Ok(None);
+        };
+        let state = DidAccountState::from_account_data(&account.data)
+            .map_err(|e| anyhow!("decoding the registry account: {e}"))?;
+        Ok(state.find_verification_method(fragment).cloned())
     }
 
     /// The key buffer this signer has open for the DID, if any.
@@ -466,13 +739,38 @@ fn network_of(arg: NetworkArg) -> Network {
     }
 }
 
-fn explorer_url(network: Network, signature: &str) -> String {
+/// The explorer link for a signature. A localnet link carries the RPC
+/// endpoint, since the explorer cannot guess it.
+fn explorer_url(network: Network, signature: &str, rpc: &str) -> String {
     let base = format!("https://explorer.solana.com/tx/{signature}");
     match network {
         Network::Mainnet => base,
         Network::Devnet => format!("{base}?cluster=devnet"),
         Network::Testnet => format!("{base}?cluster=testnet"),
-        Network::Localnet => format!("{base}?cluster=custom"),
+        Network::Localnet => format!("{base}?cluster=custom&customUrl={}", percent_encode(rpc)),
+    }
+}
+
+/// Percent-encode everything outside the URL unreserved set.
+fn percent_encode(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+/// Read a message from `--message` (UTF-8 text) or `--message-file` (raw
+/// bytes).
+fn load_message(text: Option<String>, file: Option<&Path>) -> Result<Vec<u8>> {
+    match (text, file) {
+        (Some(text), None) => Ok(text.into_bytes()),
+        (None, Some(path)) => fs::read(path).with_context(|| format!("reading {}", path.display())),
+        _ => bail!("pass exactly one of --message or --message-file"),
     }
 }
 
@@ -482,7 +780,7 @@ fn load_keypair(path: Option<&Path>) -> Result<Keypair> {
         Some(path) => path.to_path_buf(),
         None => {
             let home = std::env::var_os("HOME")
-                .ok_or_else(|| anyhow!("HOME is not set; pass --keypair"))?;
+                .ok_or_else(|| anyhow!("HOME is not set, pass --keypair"))?;
             PathBuf::from(home).join(".config/solana/id.json")
         }
     };
@@ -510,4 +808,81 @@ fn load_key(key: Option<&str>, key_file: Option<&Path>, key_type: KeyType) -> Re
         );
     }
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use did_bio_core::generative_document;
+
+    use super::*;
+
+    #[test]
+    fn localnet_links_carry_the_rpc_endpoint() {
+        assert_eq!(
+            explorer_url(Network::Localnet, "sig", "http://127.0.0.1:8899"),
+            "https://explorer.solana.com/tx/sig?cluster=custom&customUrl=http%3A%2F%2F127.0.0.1%3A8899"
+        );
+        assert_eq!(
+            explorer_url(Network::Devnet, "sig", "https://api.devnet.solana.com"),
+            "https://explorer.solana.com/tx/sig?cluster=devnet"
+        );
+    }
+
+    fn keypair_and_document() -> (Keypair, DidDocument) {
+        let keypair = Keypair::new_from_array([7; 32]);
+        let did = BioDid::new(Network::Devnet, keypair.pubkey().to_bytes());
+        let document = generative_document(&did).expect("a key subject has one");
+        (keypair, document)
+    }
+
+    #[test]
+    fn a_fragment_names_its_method() {
+        let (_, document) = keypair_and_document();
+        let method = fragment_of(&document, "default").expect("the founding key");
+        assert_eq!(method["type"], "Multikey");
+        assert!(method["id"].as_str().unwrap().ends_with("#default"));
+        assert_eq!(fragment_of(&document, "missing"), None);
+    }
+
+    #[test]
+    fn the_default_key_signs_under_every_relationship_it_holds() {
+        let (keypair, document) = keypair_and_document();
+        let signature = keypair.sign_message(b"hello");
+        for relationship in [
+            RelationshipArg::Authentication,
+            RelationshipArg::AssertionMethod,
+            RelationshipArg::CapabilityInvocation,
+            RelationshipArg::CapabilityDelegation,
+        ] {
+            verify_signature(
+                &document,
+                "default",
+                relationship,
+                b"hello",
+                signature.as_ref(),
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn a_wrong_message_or_key_is_rejected() {
+        let (keypair, document) = keypair_and_document();
+        let signature = keypair.sign_message(b"hello");
+        let rejected = |fragment: &str, message: &[u8], signature: &[u8]| {
+            verify_signature(
+                &document,
+                fragment,
+                RelationshipArg::Authentication,
+                message,
+                signature,
+            )
+            .unwrap_err()
+            .to_string()
+        };
+        assert!(rejected("default", b"other", signature.as_ref()).contains("signature rejected"));
+        let stranger = Keypair::new_from_array([8; 32]).sign_message(b"hello");
+        assert!(rejected("default", b"hello", stranger.as_ref()).contains("signature rejected"));
+        assert!(rejected("missing", b"hello", signature.as_ref()).contains("not found"));
+    }
 }

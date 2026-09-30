@@ -9,6 +9,9 @@ updates:
     groups:
       cargo:
         patterns: ["*"]
+    ignore:
+      - dependency-name: "solana-*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: /
     schedule:

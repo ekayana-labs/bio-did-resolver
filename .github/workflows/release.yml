@@ -19,7 +19,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
         with:
-          toolchain: 1.89.0
+          toolchain: 1.97.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Tag must match the crate version
         id: crate
@@ -27,7 +27,7 @@ jobs:
           version=$(cargo metadata --no-deps --format-version 1 \
             | jq -r '.packages[] | select(.name == "bio-did-resolver") | .version')
           test "v$version" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME != crate v$version"; exit 1; }
-          # The first release is published by hand; skip versions crates.io already has.
+          # Skip versions crates.io already has, such as a release published by hand.
           if curl -sf -A "release.yml (github.com/ekayana-labs/bio-did-resolver)" \
                "https://crates.io/api/v1/crates/bio-did-resolver/$version" -o /dev/null; then
             echo "published=true" >> "$GITHUB_OUTPUT"; echo "bio-did-resolver $version is already on crates.io; nothing to do"

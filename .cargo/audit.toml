@@ -1,0 +1,15 @@
+# cargo-audit reads this file in CI and in the weekly scan. A vulnerability
+# anywhere in the lock file still fails the check.
+#
+# RUSTSEC-2025-0141 marks bincode 1.x unmaintained. This crate never calls
+# bincode itself. It arrives only through the Solana RPC client stack, and
+# the newest releases, solana-client 4.3 and solana-sdk 5.0, still require it
+# although the transaction crates beneath them have moved to wincode. The
+# advisory reports no vulnerability, and its authors consider 1.3.3
+# complete. Drop the entry once solana-rpc-client no longer depends on
+# bincode.
+
+[advisories]
+ignore = [
+  "RUSTSEC-2025-0141", # bincode 1.x, through solana-client and solana-sdk
+]

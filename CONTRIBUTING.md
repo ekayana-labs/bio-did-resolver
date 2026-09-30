@@ -19,6 +19,9 @@ did-bio-core = { path = "../did-bio-core" }
 bio-did-registry = { path = "../bio-did-registry/program" }
 ```
 
+`.cargo/audit.toml` is tracked. It lists the advisories cargo-audit ignores
+in CI, each with its reason and the condition for dropping it.
+
 ## Rules
 
 - The program is the source of truth. Instruction discriminators, argument

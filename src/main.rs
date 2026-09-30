@@ -7,7 +7,7 @@ use std::process::ExitCode;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
-use did_bio_core::account::KeyType;
+use did_bio_core::account::{DidAccountState, KeyType, StoredVerificationMethod};
 use did_bio_core::{
     resolution_error, resolve_from_account, BioDid, KeyBufferState, Network, RawAccount,
 };
@@ -58,7 +58,7 @@ fn run(cli: Cli) -> Result<()> {
                 &keypair.pubkey().to_bytes(),
                 nonce,
             );
-            let w = Write::new(&write.for_did(did.to_string()))?;
+            let w = Write::with_keypair(&write.for_did(did.to_string()), keypair)?;
             w.send_with(
                 "initialize_owned",
                 &[("nonce", nonce.to_string())],
@@ -107,6 +107,11 @@ fn run(cli: Cli) -> Result<()> {
         } => {
             let w = Write::new(&write)?;
             let flags = parse_flags(&flags).map_err(|e| anyhow!(e))?;
+            // Check the flags against the method's key type, as add-key does.
+            // An unknown method is left for the program to report.
+            if let Some(method) = w.stored_method(&fragment)? {
+                check_flags(method.method_type, flags).map_err(|e| anyhow!(e))?;
+            }
             w.send(
                 "set_verification_method_flags",
                 ix::set_verification_method_flags(&w.payer(), &w.subject, &fragment, flags),
@@ -245,7 +250,11 @@ struct Write {
 
 impl Write {
     fn new(opts: &WriteOpts) -> Result<Self> {
-        let keypair = load_keypair(opts.keypair.as_deref())?;
+        Self::with_keypair(opts, load_keypair(opts.keypair.as_deref())?)
+    }
+
+    /// [`Write::new`] with a keypair the caller has already loaded.
+    fn with_keypair(opts: &WriteOpts, keypair: Keypair) -> Result<Self> {
         let did = match &opts.did {
             Some(did) => did
                 .parse::<BioDid>()
@@ -350,7 +359,7 @@ impl Write {
         println!("  signature {signature}");
         println!(
             "  {}",
-            explorer_url(self.did.network, &signature.to_string())
+            explorer_url(self.did.network, &signature.to_string(), &self.url)
         );
         Ok(())
     }
@@ -437,6 +446,25 @@ impl Write {
         )
     }
 
+    /// The verification method `fragment` as the registry stores it now, if
+    /// the account and the method exist.
+    fn stored_method(&self, fragment: &str) -> Result<Option<StoredVerificationMethod>> {
+        let account = self
+            .client()
+            .get_account_with_commitment(
+                &ix::did_account(&self.subject),
+                CommitmentConfig::confirmed(),
+            )
+            .context("fetching the registry account")?
+            .value;
+        let Some(account) = account.filter(|account| account.owner == ix::program_id()) else {
+            return Ok(None);
+        };
+        let state = DidAccountState::from_account_data(&account.data)
+            .map_err(|e| anyhow!("decoding the registry account: {e}"))?;
+        Ok(state.find_verification_method(fragment).cloned())
+    }
+
     /// The key buffer this signer has open for the DID, if any.
     fn pending_upload(
         &self,
@@ -467,14 +495,29 @@ fn network_of(arg: NetworkArg) -> Network {
     }
 }
 
-fn explorer_url(network: Network, signature: &str) -> String {
+/// The explorer link for a signature. A localnet link carries the RPC
+/// endpoint, since the explorer cannot guess it.
+fn explorer_url(network: Network, signature: &str, rpc: &str) -> String {
     let base = format!("https://explorer.solana.com/tx/{signature}");
     match network {
         Network::Mainnet => base,
         Network::Devnet => format!("{base}?cluster=devnet"),
         Network::Testnet => format!("{base}?cluster=testnet"),
-        Network::Localnet => format!("{base}?cluster=custom"),
+        Network::Localnet => format!("{base}?cluster=custom&customUrl={}", percent_encode(rpc)),
     }
+}
+
+/// Percent-encode everything outside the URL unreserved set.
+fn percent_encode(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
 }
 
 /// Default to the Solana CLI's keypair, `~/.config/solana/id.json`.
@@ -511,4 +554,21 @@ fn load_key(key: Option<&str>, key_file: Option<&Path>, key_type: KeyType) -> Re
         );
     }
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn localnet_links_carry_the_rpc_endpoint() {
+        assert_eq!(
+            explorer_url(Network::Localnet, "sig", "http://127.0.0.1:8899"),
+            "https://explorer.solana.com/tx/sig?cluster=custom&customUrl=http%3A%2F%2F127.0.0.1%3A8899"
+        );
+        assert_eq!(
+            explorer_url(Network::Devnet, "sig", "https://api.devnet.solana.com"),
+            "https://explorer.solana.com/tx/sig?cluster=devnet"
+        );
+    }
 }

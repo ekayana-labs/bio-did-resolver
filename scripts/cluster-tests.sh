@@ -171,7 +171,7 @@ ok   "the key's holder grants itself protection" run set-flags rot --flags authe
 bump
 settle
 ok   "rot now appears under capabilityInvocation" test "$("$BIN" resolve "$SUBJECT_DID" --url "$RPC" | jq -r '[.didDocument.capabilityInvocation[] | select(endswith("#rot"))] | length')" = 1
-fails "flags not permitted for the key type" "$E_INVALID_FLAGS" run set-flags kex --flags authentication "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
+fails "client: flags not permitted for the key type" "can only carry key-agreement" run set-flags kex --flags authentication "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
 fails "unknown fragment" "$E_VM_NOT_FOUND" run set-flags nope --flags authentication "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
 
 section "remove_verification_method"

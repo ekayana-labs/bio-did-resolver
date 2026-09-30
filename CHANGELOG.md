@@ -6,6 +6,20 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- `set-flags` checks the new flags against the method's key type before
+  sending, as `add-key` already did.
+- `init-owned` reads the keypair file once.
+
+### Fixed
+
+- Localnet explorer links carry the RPC endpoint, so the explorer opens
+  the right cluster.
+- The cluster tests expect the client's own messages for the requests it
+  now refuses before sending, and cover owned DIDs.
+- CI checks that `init-owned` is reachable.
+
 ## [0.1.1] - 2026-09-17
 
 ### Added

@@ -97,7 +97,7 @@ jobs:
           toolchain: 1.97.1
       # Install a prebuilt cargo-audit. Otherwise the audit action compiles it
       # on every run with the toolchain the repository pins.
-      - uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73 # v2.87.17
+      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
         with:
           tool: cargo-audit
       - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0

@@ -23,7 +23,7 @@ name = "bio-did-resolver"
 path = "src/main.rs"
 
 [dependencies]
-did-bio-core = "0.1.2"
+did-bio-core = { version = "0.1.2", features = ["verify"] }
 solana-client = "3"
 solana-sdk = "3"
 solana-commitment-config = "3"

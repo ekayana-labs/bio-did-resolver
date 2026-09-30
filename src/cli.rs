@@ -6,6 +6,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use did_bio_core::account::{
     vm_flags, KeyType, DEFAULT_FRAGMENT, MAX_CONTROLLER_LEN, MAX_FRAGMENT_LEN,
 };
+use did_bio_core::VerificationRelationship;
 
 #[derive(Parser, Debug)]
 #[command(name = "bio-did-resolver", version, about)]
@@ -20,14 +21,85 @@ pub enum Command {
     Resolve {
         /// The did:bio DID to resolve
         did: String,
-        /// RPC endpoint, by default the public endpoint of the DID's cluster
-        #[arg(long, value_name = "URL")]
-        url: Option<String>,
+        #[command(flatten)]
+        read: ReadOpts,
+    },
+    /// Print the verification method or service a DID URL names
+    Dereference {
+        /// A DID URL such as `did:bio:devnet:<ID>#default`. Without a
+        /// fragment the whole document is printed
+        did_url: String,
+        #[command(flatten)]
+        read: ReadOpts,
+    },
+    /// Check a signature against a verification method in the resolved
+    /// document
+    Verify {
+        /// The signing method as a DID URL, such as `did:bio:devnet:<ID>#default`
+        did_url: String,
+        /// The signed message as UTF-8 text
+        #[arg(
+            long,
+            value_name = "TEXT",
+            conflicts_with = "message_file",
+            required_unless_present = "message_file"
+        )]
+        message: Option<String>,
+        /// The signed message as a raw byte file
+        #[arg(long, value_name = "PATH")]
+        message_file: Option<PathBuf>,
+        /// The signature as base58
+        #[arg(
+            long,
+            value_name = "BASE58",
+            conflicts_with = "signature_file",
+            required_unless_present = "signature_file"
+        )]
+        signature: Option<String>,
+        /// The signature as a raw byte file, handy for 4627 byte ML-DSA-87
+        /// signatures
+        #[arg(long, value_name = "PATH")]
+        signature_file: Option<PathBuf>,
+        /// The relationship the method must hold in the document
+        #[arg(long, value_enum, default_value = "authentication")]
+        relationship: RelationshipArg,
+        #[command(flatten)]
+        read: ReadOpts,
+    },
+    /// Sign a message with a keypair and print the signature as base58, the
+    /// counterpart of `verify`
+    Sign {
+        /// The message as UTF-8 text
+        #[arg(
+            long,
+            value_name = "TEXT",
+            conflicts_with = "message_file",
+            required_unless_present = "message_file"
+        )]
+        message: Option<String>,
+        /// The message as a raw byte file
+        #[arg(long, value_name = "PATH")]
+        message_file: Option<PathBuf>,
+        /// Keypair to sign with, by default `~/.config/solana/id.json`
+        #[arg(long, value_name = "PATH")]
+        keypair: Option<PathBuf>,
+    },
+    /// Print a keypair's DID and registry account without touching the network
+    Did {
+        /// Print the owned DID this keypair creates with this nonce instead
+        #[arg(long, value_name = "NONCE")]
+        owned: Option<u64>,
+        /// Keypair to derive from, by default `~/.config/solana/id.json`
+        #[arg(long, value_name = "PATH")]
+        keypair: Option<PathBuf>,
+        /// Cluster the DID names
+        #[arg(long, value_enum, default_value = "devnet")]
+        network: NetworkArg,
     },
     /// Create the registry account for a DID, paid for by anyone
     Init(WriteOpts),
-    /// Create an owned DID: its subject is derived from the keypair and a
-    /// nonce, and the keypair controls it from the first version
+    /// Create an owned DID whose subject is derived from the keypair and a
+    /// nonce, controlled by the keypair from the first version
     InitOwned {
         /// Nonce that names the DID together with the keypair. The same nonce
         /// always names the same DID
@@ -105,6 +177,18 @@ pub enum Command {
     CloseKeyBuffer(WriteOpts),
 }
 
+/// Options shared by the commands that read the registry.
+#[derive(Args, Debug, Clone)]
+pub struct ReadOpts {
+    /// RPC endpoint, by default the public endpoint of the DID's cluster
+    #[arg(long, value_name = "URL")]
+    pub url: Option<String>,
+    /// Commitment to read at. `confirmed` sees writes about 13 seconds
+    /// sooner and may still roll back one slot
+    #[arg(long, value_enum, default_value = "finalized")]
+    pub commitment: CommitmentArg,
+}
+
 /// Options shared by every command that sends a transaction.
 #[derive(Args, Debug, Clone)]
 pub struct WriteOpts {
@@ -125,6 +209,9 @@ pub struct WriteOpts {
     /// Confirm an irreversible action or a mainnet transaction
     #[arg(long)]
     pub yes: bool,
+    /// Print one JSON object with the signatures and logs instead of text
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Options of `init-owned`, which derives the DID instead of taking one.
@@ -145,6 +232,9 @@ pub struct OwnedOpts {
     /// Confirm a mainnet transaction
     #[arg(long)]
     pub yes: bool,
+    /// Print one JSON object with the signatures and logs instead of text
+    #[arg(long)]
+    pub json: bool,
 }
 
 impl OwnedOpts {
@@ -157,6 +247,7 @@ impl OwnedOpts {
             url: self.url.clone(),
             dry_run: self.dry_run,
             yes: self.yes,
+            json: self.json,
         }
     }
 }
@@ -167,6 +258,33 @@ pub enum NetworkArg {
     Devnet,
     Testnet,
     Localnet,
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommitmentArg {
+    Finalized,
+    Confirmed,
+}
+
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RelationshipArg {
+    Authentication,
+    AssertionMethod,
+    KeyAgreement,
+    CapabilityInvocation,
+    CapabilityDelegation,
+}
+
+impl From<RelationshipArg> for VerificationRelationship {
+    fn from(arg: RelationshipArg) -> Self {
+        match arg {
+            RelationshipArg::Authentication => VerificationRelationship::Authentication,
+            RelationshipArg::AssertionMethod => VerificationRelationship::AssertionMethod,
+            RelationshipArg::KeyAgreement => VerificationRelationship::KeyAgreement,
+            RelationshipArg::CapabilityInvocation => VerificationRelationship::CapabilityInvocation,
+            RelationshipArg::CapabilityDelegation => VerificationRelationship::CapabilityDelegation,
+        }
+    }
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -319,6 +437,39 @@ mod tests {
     #[test]
     fn command_line_is_well_formed() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn verify_needs_a_message_and_a_signature() {
+        let did = "did:bio:devnet:2T6zLFvMx7NJac5qQtiKTaPhMwHLkwKETWjUK1yKv4tc#default";
+        assert!(
+            Cli::try_parse_from(["bio-did-resolver", "verify", did, "--message", "m"]).is_err()
+        );
+        assert!(
+            Cli::try_parse_from(["bio-did-resolver", "verify", did, "--signature", "s"]).is_err()
+        );
+        let parsed = Cli::try_parse_from([
+            "bio-did-resolver",
+            "verify",
+            did,
+            "--message",
+            "m",
+            "--signature",
+            "s",
+            "--relationship",
+            "assertion-method",
+            "--commitment",
+            "confirmed",
+        ])
+        .unwrap();
+        let Command::Verify {
+            relationship, read, ..
+        } = parsed.command
+        else {
+            panic!("parsed as another command");
+        };
+        assert_eq!(relationship, RelationshipArg::AssertionMethod);
+        assert_eq!(read.commitment, CommitmentArg::Confirmed);
     }
 
     #[test]

@@ -99,29 +99,9 @@ fn flags_and_key_types_match_the_program() {
 /// program's own name and code, and nothing else is.
 #[test]
 fn program_errors_match_the_program() {
-    let variants = [
-        DidError::Unauthorized,
-        DidError::DidDeactivated,
-        DidError::InvalidFragment,
-        DidError::FragmentAlreadyInUse,
-        DidError::VerificationMethodNotFound,
-        DidError::ServiceNotFound,
-        DidError::TooManyVerificationMethods,
-        DidError::TooManyServices,
-        DidError::TooManyControllers,
-        DidError::InvalidKeyLength,
-        DidError::InvalidFlags,
-        DidError::ProtectedVerificationMethod,
-        DidError::LastAuthority,
-        DidError::InvalidController,
-        DidError::InvalidServiceValue,
-        DidError::InvalidKeyBuffer,
-        DidError::InvalidKeyChunk,
-        DidError::KeyBufferIncomplete,
-    ];
-    assert_eq!(variants.len(), ix::PROGRAM_ERRORS.len());
-    for (variant, (code, name, _)) in variants.iter().zip(ix::PROGRAM_ERRORS) {
-        assert_eq!(*variant as u32, code, "{name}");
+    assert_eq!(DidError::ALL.len(), ix::PROGRAM_ERRORS.len());
+    for (variant, (code, name, _)) in DidError::ALL.iter().zip(ix::PROGRAM_ERRORS) {
+        assert_eq!(variant.code(), code, "{name}");
         assert_eq!(format!("{variant:?}"), name);
     }
 }

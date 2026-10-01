@@ -239,8 +239,12 @@ fn program_errors_are_named() {
         ix::program_error(6002).map(|(name, _)| name),
         Some("InvalidFragment")
     );
+    assert_eq!(
+        ix::program_error(6018).map(|(name, _)| name),
+        Some("InvalidKey")
+    );
     assert!(ix::program_error(5999).is_none());
-    assert!(ix::program_error(6018).is_none());
+    assert!(ix::program_error(6019).is_none());
 }
 
 #[test]

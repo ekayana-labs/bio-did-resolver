@@ -31,7 +31,7 @@ pub const INITIALIZE_OWNED: [u8; 8] = [51, 133, 240, 229, 41, 137, 108, 91];
 /// The program's domain errors, custom codes 6000 upwards, by name and in
 /// the words of its documentation. `tests/parity.rs` pins the table against
 /// the program's own error type.
-pub const PROGRAM_ERRORS: [(u32, &str, &str); 18] = [
+pub const PROGRAM_ERRORS: [(u32, &str, &str); 19] = [
     (
         6000,
         "Unauthorized",
@@ -117,6 +117,11 @@ pub const PROGRAM_ERRORS: [(u32, &str, &str); 18] = [
         6017,
         "KeyBufferIncomplete",
         "the key buffer has not received every byte of the key yet",
+    ),
+    (
+        6018,
+        "InvalidKey",
+        "the key material is not a valid public key for the verification method type",
     ),
 ];
 

@@ -6,6 +6,24 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-01
+
+### Added
+
+- `update-service` replaces a service's type and endpoint in place.
+- `--via <DID>` signs an update as an authority of a native controller of
+  the DID.
+
+### Changed
+
+- Built against `did-bio-core` and `bio-did-registry` 0.2. Program error
+  6018, `InvalidKey`, is printed by name.
+- `WriteOpts` gained a field and `Command` a variant.
+- The client refuses what registry 0.2 refuses. That covers a `protected`
+  method without `capability-invocation` or under another key,
+  `key-agreement` on an ML-DSA-87 key, an Ed25519 key off the curve and a
+  secp256k1 key that is not compressed.
+
 ## [0.2.0] - 2026-10-01
 
 ### Added
@@ -56,7 +74,8 @@ adheres to [Semantic Versioning](https://semver.org/).
 First release, with `resolve`, the registry update commands and chunked
 upload of ML-DSA-87 keys through a key buffer.
 
-[Unreleased]: https://github.com/ekayana-labs/bio-did-resolver/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/ekayana-labs/bio-did-resolver/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/ekayana-labs/bio-did-resolver/releases/tag/v0.3.0
 [0.2.0]: https://github.com/ekayana-labs/bio-did-resolver/releases/tag/v0.2.0
 [0.1.1]: https://github.com/ekayana-labs/bio-did-resolver/releases/tag/v0.1.1
 [0.1.0]: https://github.com/ekayana-labs/bio-did-resolver/releases/tag/v0.1.0

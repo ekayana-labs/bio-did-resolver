@@ -5,6 +5,7 @@
 
 use bio_did_registry::error::DidError;
 use bio_did_registry::{ix as program_ix, state as program, ID};
+use bio_did_resolver::cli::check_flags;
 use bio_did_resolver::ix;
 use did_bio_core::account::{self as core, vm_flags, KeyType};
 
@@ -92,6 +93,26 @@ fn flags_and_key_types_match_the_program() {
             program::expected_key_len(key_type as u8),
             "{key_type:?}"
         );
+    }
+}
+
+/// The flag checks the client makes before sending agree with the program's
+/// for every key type and every flag value.
+#[test]
+fn flag_checks_match_the_program() {
+    for key_type in [
+        KeyType::Ed25519,
+        KeyType::X25519,
+        KeyType::Secp256k1,
+        KeyType::MlDsa87,
+    ] {
+        for flags in 0..=u16::MAX {
+            assert_eq!(
+                check_flags(key_type, flags).is_ok(),
+                program::validate_vm_flags(key_type as u8, flags).is_ok(),
+                "{key_type:?} {flags:#06x}"
+            );
+        }
     }
 }
 

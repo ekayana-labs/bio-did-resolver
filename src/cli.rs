@@ -348,8 +348,9 @@ pub fn check_fragment(fragment: &str) -> Result<(), String> {
 
 /// Check flags against a key type the way the program does. Only Ed25519
 /// keys can sign a transaction, so only they may hold
-/// `capability-invocation` or be `protected`. An X25519 key only agrees on
-/// keys.
+/// `capability-invocation` or be `protected`, and a protected method keeps
+/// `capability-invocation` so that its own key can always change it. An
+/// X25519 key only agrees on keys, and an ML-DSA-87 key only signs.
 pub fn check_flags(key_type: KeyType, flags: u16) -> Result<(), String> {
     if flags & !vm_flags::VALID_MASK != 0 {
         return Err("unknown flag bits".into());
@@ -368,10 +369,19 @@ pub fn check_flags(key_type: KeyType, flags: u16) -> Result<(), String> {
             ));
         }
     }
+    if flags & vm_flags::PROTECTED != 0 && flags & vm_flags::CAPABILITY_INVOCATION == 0 {
+        return Err(
+            "a protected method must keep capability-invocation, so that its own key can change it"
+                .into(),
+        );
+    }
     if key_type == KeyType::X25519
         && flags & vm_flags::RELATIONSHIP_MASK & !vm_flags::KEY_AGREEMENT != 0
     {
         return Err("an X25519 key can only carry key-agreement".into());
+    }
+    if key_type == KeyType::MlDsa87 && flags & vm_flags::KEY_AGREEMENT != 0 {
+        return Err("an ML-DSA-87 key only signs, so it cannot carry key-agreement".into());
     }
     Ok(())
 }
@@ -493,6 +503,15 @@ mod tests {
         assert!(check_flags(KeyType::X25519, vm_flags::KEY_AGREEMENT).is_ok());
         assert!(check_flags(KeyType::X25519, vm_flags::AUTHENTICATION).is_err());
         assert!(check_flags(KeyType::Ed25519, 1 << 12).is_err());
+        assert!(check_flags(
+            KeyType::Ed25519,
+            vm_flags::AUTHENTICATION | vm_flags::PROTECTED
+        )
+        .unwrap_err()
+        .contains("must keep capability-invocation"));
+        assert!(check_flags(KeyType::MlDsa87, vm_flags::KEY_AGREEMENT)
+            .unwrap_err()
+            .contains("only signs"));
     }
 
     #[test]

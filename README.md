@@ -8,7 +8,7 @@
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/ekayana-labs/bio-did-resolver/badge)](https://scorecard.dev/viewer/?uri=github.com/ekayana-labs/bio-did-resolver)
 
 Resolver and registry client for the
-[`did:bio`](https://github.com/ekayana-labs/did-bio-spec) DID method on
+[`did:bio`](https://github.com/ekayana-labs/bio-did-spec) DID method on
 Solana. It resolves a DID to its DID document and sends the registry
 program's instructions from the command line.
 
@@ -107,7 +107,7 @@ bio-did-resolver did --owned 42
 | `init-owned <NONCE>` | Creates an owned DID, described below |
 | `add-key` / `remove-key` | Adds or removes a verification method |
 | `set-flags` | Replaces a method's relationship flags |
-| `add-service` / `remove-service` | Adds or removes a service endpoint |
+| `add-service` / `update-service` / `remove-service` | Adds, replaces or removes a service endpoint |
 | `set-controllers` | Replaces the native and external controller sets |
 | `deactivate --yes` | Deactivates the DID for good |
 | `close-key-buffer` | Discards a pending large key upload |
@@ -121,6 +121,7 @@ the keypair's own DID on `--network`, which defaults to `devnet`.
 ```console
 bio-did-resolver init
 bio-did-resolver add-service metadata BioMetadata ipfs://<cid>
+bio-did-resolver update-service metadata BioMetadata ipfs://<new-cid>
 bio-did-resolver add-key rotation-1 --type ed25519 --key <BASE58> --flags authentication,capability-invocation
 bio-did-resolver add-key pq --type ml-dsa-87 --key-file pq.pub --flags assertion
 bio-did-resolver set-flags default --flags authentication,assertion,capability-invocation,protected
@@ -137,6 +138,15 @@ sign for.
 
 ```console
 bio-did-resolver init did:bio:devnet:<SUBJECT> --keypair sponsor.json
+```
+
+A native controller's authority can update the DID too. Pass the
+controller's DID with `--via`, and the keypair signs as one of the
+controller's `capabilityInvocation` methods. Control reaches one level,
+and a `protected` method still changes only under its own key.
+
+```console
+bio-did-resolver add-service notes Note https://lab.example.org/notes did:bio:devnet:<DATASET> --via did:bio:devnet:<LAB>
 ```
 
 ## Owned DIDs
@@ -179,11 +189,15 @@ bio-did-resolver close-key-buffer
 - Sending to mainnet requires `--yes`.
 - `deactivate` is permanent and always requires `--yes`.
 - Requests the program would refuse fail before they leave the machine,
-  with a reason. Key material is length checked against the key type.
-  Fragments follow the program's charset, and `default` stays reserved for
-  the founding key. Only `ed25519` keys may take `capability-invocation`
-  or `protected`. An `--external` controller must be a `did:<method>:<id>`
-  of another method.
+  with a reason. Key material is length checked against the key type. An
+  `ed25519` key must lie on the curve, and a `secp256k1` key must be
+  compressed. Fragments follow the program's charset, and `default` stays
+  reserved for the founding key. Only `ed25519` keys may take
+  `capability-invocation` or `protected`. A `protected` method keeps
+  `capability-invocation`, and only its own key can add it. An `ml-dsa-87`
+  key cannot take `key-agreement`. An `--external` controller must be a
+  `did:<method>:<id>` of another method, and `--via` must name a native
+  controller that the keypair is an authority of.
 - When the program does refuse a transaction, its error is printed by name
   and meaning, as in `InvalidFragment (6002), the fragment is empty, too
   long, reserved, or contains invalid characters`.
@@ -201,7 +215,8 @@ recomputes discriminators from instruction names and checks the borsh
 argument layout, the account metas and the owned subject derivation.
 `tests/parity.rs` compiles the program as a host library and checks that
 this crate, `did-bio-core` and the program agree on every constant,
-derivation and error code.
+derivation, error code and instruction. It also checks that the client
+refuses exactly the flags and keys the program refuses.
 
 `scripts/cluster-tests.sh` runs every instruction and every guard against
 a live cluster with throwaway keys. It needs `solana`, `solana-keygen` and

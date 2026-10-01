@@ -41,6 +41,7 @@ fn discriminators_are_sha256_of_instruction_names() {
         ),
         (ix::CLOSE_KEY_BUFFER, "close_key_buffer"),
         (ix::INITIALIZE_OWNED, "initialize_owned"),
+        (ix::UPDATE_SERVICE, "update_service"),
     ] {
         assert_eq!(constant, discriminator(name), "{name}");
     }
@@ -239,8 +240,12 @@ fn program_errors_are_named() {
         ix::program_error(6002).map(|(name, _)| name),
         Some("InvalidFragment")
     );
+    assert_eq!(
+        ix::program_error(6018).map(|(name, _)| name),
+        Some("InvalidKey")
+    );
     assert!(ix::program_error(5999).is_none());
-    assert!(ix::program_error(6018).is_none());
+    assert!(ix::program_error(6019).is_none());
 }
 
 #[test]
@@ -294,6 +299,28 @@ fn set_flags_needs_no_payer() {
 }
 
 #[test]
+fn via_controller_appends_the_controller_account() {
+    let (payer, authority, subject, lab) = (
+        Pubkey::new_unique(),
+        Pubkey::new_unique(),
+        Pubkey::new_unique(),
+        Pubkey::new_unique(),
+    );
+    for plain in [
+        ix::deactivate(&payer, &authority, &subject),
+        ix::set_verification_method_flags(&authority, &subject, "default", 0x0003),
+        ix::add_verification_method_from_buffer(&payer, &authority, &subject),
+    ] {
+        let via = ix::via_controller(plain.clone(), &lab);
+        assert_eq!(via.data, plain.data);
+        let (last, rest) = via.accounts.split_last().unwrap();
+        assert_eq!(rest, plain.accounts.as_slice());
+        assert_eq!(last.pubkey, ix::did_account(&lab));
+        assert!(!last.is_signer && !last.is_writable);
+    }
+}
+
+#[test]
 fn service_and_fragment_layouts() {
     let (payer, authority, subject) = (
         Pubkey::new_unique(),
@@ -311,6 +338,15 @@ fn service_and_fragment_layouts() {
     data.extend(str_bytes("BioMetadata"));
     data.extend(str_bytes("ipfs://bafy"));
     assert_eq!(add.data, data);
+
+    // update_service takes the same arguments and accounts as add_service.
+    let update = ix::update_service(&payer, &authority, &subject, &service);
+    let mut data = ix::UPDATE_SERVICE.to_vec();
+    data.extend(str_bytes("metadata"));
+    data.extend(str_bytes("BioMetadata"));
+    data.extend(str_bytes("ipfs://bafy"));
+    assert_eq!(update.data, data);
+    assert_eq!(update.accounts, add.accounts);
 
     let remove = ix::remove_service(&payer, &authority, &subject, "metadata");
     let mut data = ix::REMOVE_SERVICE.to_vec();

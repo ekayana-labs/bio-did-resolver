@@ -24,7 +24,7 @@ use solana_sdk::signature::{read_keypair_file, Keypair, Signer};
 use solana_sdk::transaction::{Transaction, TransactionError};
 
 use bio_did_resolver::cli::{
-    check_external_controller, check_flags, check_fragment, parse_flags, Cli, Command,
+    check_external_controller, check_flags, check_fragment, check_key, parse_flags, Cli, Command,
     CommitmentArg, NetworkArg, ReadOpts, RelationshipArg, WriteOpts,
 };
 use bio_did_resolver::ix;
@@ -100,6 +100,7 @@ fn run(cli: Cli) -> Result<()> {
         }
         Command::Init(opts) => {
             let w = Write::new(&opts)?;
+            w.refuse_via()?;
             if !w.did.is_key_subject() {
                 bail!(
                     "{} is an owned subject rather than a key, and its authority creates \
@@ -139,6 +140,7 @@ fn run(cli: Cli) -> Result<()> {
             let key = load_key(key.as_deref(), key_file.as_deref(), key_type)?;
             let flags = parse_flags(&flags).map_err(|e| anyhow!(e))?;
             check_flags(key_type, flags).map_err(|e| anyhow!(e))?;
+            check_key(key_type, flags, &key, &w.payer().to_bytes()).map_err(|e| anyhow!(e))?;
             if key.len() > ix::MAX_INLINE_KEY_LEN {
                 return w.finish(w.upload_key(&fragment, key_type, flags, &key));
             }
@@ -150,14 +152,24 @@ fn run(cli: Cli) -> Result<()> {
             };
             w.send(
                 "add_verification_method",
-                ix::add_verification_method(&w.payer(), &w.payer(), &w.subject, &vm),
+                w.update(ix::add_verification_method(
+                    &w.payer(),
+                    &w.payer(),
+                    &w.subject,
+                    &vm,
+                )),
             )
         }
         Command::RemoveKey { fragment, write } => {
             let w = Write::new(&write)?;
             w.send(
                 "remove_verification_method",
-                ix::remove_verification_method(&w.payer(), &w.payer(), &w.subject, &fragment),
+                w.update(ix::remove_verification_method(
+                    &w.payer(),
+                    &w.payer(),
+                    &w.subject,
+                    &fragment,
+                )),
             )
         }
         Command::SetFlags {
@@ -174,7 +186,12 @@ fn run(cli: Cli) -> Result<()> {
             }
             w.send(
                 "set_verification_method_flags",
-                ix::set_verification_method_flags(&w.payer(), &w.subject, &fragment, flags),
+                w.update(ix::set_verification_method_flags(
+                    &w.payer(),
+                    &w.subject,
+                    &fragment,
+                    flags,
+                )),
             )
         }
         Command::AddService {
@@ -192,14 +209,47 @@ fn run(cli: Cli) -> Result<()> {
             };
             w.send(
                 "add_service",
-                ix::add_service(&w.payer(), &w.payer(), &w.subject, &service),
+                w.update(ix::add_service(
+                    &w.payer(),
+                    &w.payer(),
+                    &w.subject,
+                    &service,
+                )),
+            )
+        }
+        Command::UpdateService {
+            fragment,
+            service_type,
+            endpoint,
+            write,
+        } => {
+            let w = Write::new(&write)?;
+            check_fragment(&fragment).map_err(|e| anyhow!(e))?;
+            let service = ix::Service {
+                fragment: &fragment,
+                service_type: &service_type,
+                endpoint: &endpoint,
+            };
+            w.send(
+                "update_service",
+                w.update(ix::update_service(
+                    &w.payer(),
+                    &w.payer(),
+                    &w.subject,
+                    &service,
+                )),
             )
         }
         Command::RemoveService { fragment, write } => {
             let w = Write::new(&write)?;
             w.send(
                 "remove_service",
-                ix::remove_service(&w.payer(), &w.payer(), &w.subject, &fragment),
+                w.update(ix::remove_service(
+                    &w.payer(),
+                    &w.payer(),
+                    &w.subject,
+                    &fragment,
+                )),
             )
         }
         Command::SetControllers {
@@ -220,7 +270,13 @@ fn run(cli: Cli) -> Result<()> {
             }
             w.send(
                 "set_controllers",
-                ix::set_controllers(&w.payer(), &w.payer(), &w.subject, &native, &other),
+                w.update(ix::set_controllers(
+                    &w.payer(),
+                    &w.payer(),
+                    &w.subject,
+                    &native,
+                    &other,
+                )),
             )
         }
         Command::Deactivate(opts) => {
@@ -230,11 +286,12 @@ fn run(cli: Cli) -> Result<()> {
             }
             w.send(
                 "deactivate",
-                ix::deactivate(&w.payer(), &w.payer(), &w.subject),
+                w.update(ix::deactivate(&w.payer(), &w.payer(), &w.subject)),
             )
         }
         Command::CloseKeyBuffer(opts) => {
             let w = Write::new(&opts)?;
+            w.refuse_via()?;
             w.send(
                 "close_key_buffer",
                 ix::close_key_buffer(&w.payer(), &w.payer(), &w.subject),
@@ -414,6 +471,8 @@ struct Write {
     dry_run: bool,
     yes: bool,
     json: bool,
+    /// The native controller whose authority the keypair signs with.
+    via: Option<BioDid>,
     report: RefCell<Report>,
 }
 
@@ -434,6 +493,19 @@ impl Write {
             .url
             .clone()
             .unwrap_or_else(|| did.network.default_rpc_url().to_string());
+        let via = opts
+            .via
+            .as_deref()
+            .map(|via| {
+                via.parse::<BioDid>()
+                    .map_err(|e| anyhow!("invalid --via DID: {e}"))
+            })
+            .transpose()?;
+        if let Some(via) = &via {
+            if via.network != did.network {
+                bail!("--via {via} is on another cluster than {did}");
+            }
+        }
         Ok(Write {
             subject: Pubkey::new_from_array(did.subject),
             did,
@@ -442,8 +514,58 @@ impl Write {
             dry_run: opts.dry_run,
             yes: opts.yes,
             json: opts.json,
+            via,
             report: RefCell::default(),
         })
+    }
+
+    /// An update instruction, carrying the controller's registry account
+    /// when the keypair signs through `--via`.
+    fn update(&self, instruction: Instruction) -> Instruction {
+        match &self.via {
+            Some(controller) => {
+                ix::via_controller(instruction, &Pubkey::new_from_array(controller.subject))
+            }
+            None => instruction,
+        }
+    }
+
+    /// `--via` only applies to updates of an existing DID.
+    fn refuse_via(&self) -> Result<()> {
+        if self.via.is_some() {
+            bail!("--via applies to updates of an existing DID");
+        }
+        Ok(())
+    }
+
+    /// Check what the program checks before it accepts a controller's
+    /// authority, so a mistake reads as a reason rather than `Unauthorized`.
+    fn check_via(&self) -> Result<()> {
+        let Some(controller) = &self.via else {
+            return Ok(());
+        };
+        let state = self
+            .stored_state(&self.subject)?
+            .ok_or_else(|| anyhow!("{} has no registry account to update", self.did))?;
+        if state.deactivated {
+            bail!("{} is deactivated", self.did);
+        }
+        if !state.native_controllers.contains(&controller.subject) {
+            bail!("{controller} is not a native controller of {}", self.did);
+        }
+        let parent = self
+            .stored_state(&Pubkey::new_from_array(controller.subject))?
+            .ok_or_else(|| {
+                anyhow!("{controller} has no registry account, so it cannot authorize updates")
+            })?;
+        if parent.deactivated {
+            bail!("{controller} is deactivated");
+        }
+        let signer = self.payer();
+        if !parent.is_authority(&signer.to_bytes()) {
+            bail!("{signer} is not an authority of {controller}");
+        }
+        Ok(())
     }
 
     /// The keypair pays and, for updates, signs as the update authority.
@@ -463,13 +585,16 @@ impl Write {
         details: &[(&str, String)],
         instruction: Instruction,
     ) -> Result<()> {
-        let result = self.guard(action).and_then(|()| {
-            self.announce(action);
-            for (label, value) in details {
-                self.detail(label, value.clone());
-            }
-            self.execute(&self.client(), instruction)
-        });
+        let result = self
+            .guard(action)
+            .and_then(|()| self.check_via())
+            .and_then(|()| {
+                self.announce(action);
+                for (label, value) in details {
+                    self.detail(label, value.clone());
+                }
+                self.execute(&self.client(), instruction)
+            });
         self.finish(result)
     }
 
@@ -484,13 +609,16 @@ impl Write {
     fn announce(&self, action: &str) {
         if self.json {
             self.report.borrow_mut().action = action.to_string();
-            return;
+        } else {
+            println!("{action}");
+            println!("  did      {}", self.did);
+            println!("  account  {}", ix::did_account(&self.subject));
+            println!("  signer   {}", self.keypair.pubkey());
+            println!("  rpc      {}", self.url);
         }
-        println!("{action}");
-        println!("  did      {}", self.did);
-        println!("  account  {}", ix::did_account(&self.subject));
-        println!("  signer   {}", self.keypair.pubkey());
-        println!("  rpc      {}", self.url);
+        if let Some(controller) = &self.via {
+            self.detail("via", controller.to_string());
+        }
     }
 
     fn detail(&self, label: &str, value: String) {
@@ -610,6 +738,7 @@ impl Write {
     /// of its own, so an interrupted upload resumes where it stopped.
     fn upload_key(&self, fragment: &str, key_type: KeyType, flags: u16, key: &[u8]) -> Result<()> {
         self.guard("add_verification_method_from_buffer")?;
+        self.check_via()?;
         self.announce("add_verification_method (through a key buffer)");
         let client = self.client();
         let payer = self.payer();
@@ -649,7 +778,7 @@ impl Write {
                 self.step("create_key_buffer".to_string());
                 self.execute(
                     &client,
-                    ix::create_key_buffer(
+                    self.update(ix::create_key_buffer(
                         &payer,
                         &payer,
                         &self.subject,
@@ -657,7 +786,7 @@ impl Write {
                         key_type as u8,
                         flags,
                         key.len() as u32,
-                    ),
+                    )),
                 )?;
                 if self.dry_run {
                     self.step(format!(
@@ -686,27 +815,36 @@ impl Write {
         self.step("add_verification_method_from_buffer".to_string());
         self.execute(
             &client,
-            ix::add_verification_method_from_buffer(&payer, &payer, &self.subject),
+            self.update(ix::add_verification_method_from_buffer(
+                &payer,
+                &payer,
+                &self.subject,
+            )),
         )
     }
 
-    /// The verification method `fragment` as the registry stores it now, if
-    /// the account and the method exist.
-    fn stored_method(&self, fragment: &str) -> Result<Option<StoredVerificationMethod>> {
+    /// The registry state of `subject` as the cluster holds it now, if its
+    /// account exists.
+    fn stored_state(&self, subject: &Pubkey) -> Result<Option<DidAccountState>> {
         let account = self
             .client()
-            .get_account_with_commitment(
-                &ix::did_account(&self.subject),
-                CommitmentConfig::confirmed(),
-            )
+            .get_account_with_commitment(&ix::did_account(subject), CommitmentConfig::confirmed())
             .context("fetching the registry account")?
             .value;
         let Some(account) = account.filter(|account| account.owner == ix::program_id()) else {
             return Ok(None);
         };
-        let state = DidAccountState::from_account_data(&account.data)
-            .map_err(|e| anyhow!("decoding the registry account: {e}"))?;
-        Ok(state.find_verification_method(fragment).cloned())
+        DidAccountState::from_account_data(&account.data)
+            .map(Some)
+            .map_err(|e| anyhow!("decoding the registry account: {e}"))
+    }
+
+    /// The verification method `fragment` as the registry stores it now, if
+    /// the account and the method exist.
+    fn stored_method(&self, fragment: &str) -> Result<Option<StoredVerificationMethod>> {
+        Ok(self
+            .stored_state(&self.subject)?
+            .and_then(|state| state.find_verification_method(fragment).cloned()))
     }
 
     /// The key buffer this signer has open for the DID, if any.
@@ -747,7 +885,7 @@ fn explorer_url(network: Network, signature: &str, rpc: &str) -> String {
         Network::Mainnet => base,
         Network::Devnet => format!("{base}?cluster=devnet"),
         Network::Testnet => format!("{base}?cluster=testnet"),
-        Network::Localnet => format!("{base}?cluster=custom&customUrl={}", percent_encode(rpc)),
+        _ => format!("{base}?cluster=custom&customUrl={}", percent_encode(rpc)),
     }
 }
 

@@ -1,6 +1,6 @@
 [package]
 name = "bio-did-resolver"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.97.1"
 description = "Resolver and registry client for the did:bio DID method on Solana"
@@ -23,7 +23,7 @@ name = "bio-did-resolver"
 path = "src/main.rs"
 
 [dependencies]
-did-bio-core = { version = "0.1.2", features = ["verify"] }
+did-bio-core = { version = "0.2", features = ["verify"] }
 solana-client = "4"
 solana-sdk = "4"
 solana-commitment-config = "3"
@@ -34,4 +34,4 @@ bs58 = "0.5"
 
 [dev-dependencies]
 sha2 = "0.11"
-bio-did-registry = { version = "0.1.2", features = ["no-entrypoint"] }
+bio-did-registry = { version = "0.2", features = ["no-entrypoint"] }

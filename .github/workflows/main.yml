@@ -44,7 +44,7 @@ jobs:
           "$bin" --version
           "$bin" --help
           for c in resolve dereference verify sign did init init-owned add-key \
-                   remove-key set-flags add-service remove-service set-controllers \
+                   remove-key set-flags add-service update-service remove-service set-controllers \
                    deactivate close-key-buffer; do
             "$bin" help "$c" > /dev/null || { echo "missing command: $c"; exit 1; }
           done

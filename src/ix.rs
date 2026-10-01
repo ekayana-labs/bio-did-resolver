@@ -1,9 +1,9 @@
 //! Instruction encoding for the did:bio registry program.
 //!
-//! The program ships no client side builders, so the wire format lives
-//! here. Each instruction is an 8 byte discriminator,
-//! `sha256("global:<name>")[..8]`, followed by the borsh encoded arguments. The tests recompute every discriminator
-//! from its name and pin the encoded bytes.
+//! Each instruction is an 8 byte discriminator, `sha256("global:<name>")[..8]`,
+//! followed by the borsh encoded arguments. The tests recompute every
+//! discriminator from its name, pin the encoded bytes and check each builder
+//! against the one in the program's `client` module.
 
 use did_bio_core::account::PROGRAM_ID;
 use solana_sdk::instruction::{AccountMeta, Instruction};
@@ -27,11 +27,12 @@ pub const ADD_VERIFICATION_METHOD_FROM_BUFFER: [u8; 8] = [111, 184, 129, 9, 216,
 pub const CLOSE_KEY_BUFFER: [u8; 8] = [6, 209, 103, 32, 78, 18, 70, 184];
 // A DID with a program derived subject, controlled by its creator.
 pub const INITIALIZE_OWNED: [u8; 8] = [51, 133, 240, 229, 41, 137, 108, 91];
+pub const UPDATE_SERVICE: [u8; 8] = [46, 169, 26, 33, 191, 78, 40, 221];
 
 /// The program's domain errors, custom codes 6000 upwards, by name and in
 /// the words of its documentation. `tests/parity.rs` pins the table against
 /// the program's own error type.
-pub const PROGRAM_ERRORS: [(u32, &str, &str); 18] = [
+pub const PROGRAM_ERRORS: [(u32, &str, &str); 19] = [
     (
         6000,
         "Unauthorized",
@@ -117,6 +118,11 @@ pub const PROGRAM_ERRORS: [(u32, &str, &str); 18] = [
         6017,
         "KeyBufferIncomplete",
         "the key buffer has not received every byte of the key yet",
+    ),
+    (
+        6018,
+        "InvalidKey",
+        "the key material is not a valid public key for the verification method type",
     ),
 ];
 
@@ -209,6 +215,16 @@ fn update_accounts(payer: &Pubkey, authority: &Pubkey, subject: &Pubkey) -> Vec<
     ]
 }
 
+/// Append the registry account of `controller`, a native controller of the
+/// DID, read-only. The program reads it when the signer is not one of the
+/// DID's own authorities but is an authority of the controller.
+pub fn via_controller(mut instruction: Instruction, controller: &Pubkey) -> Instruction {
+    instruction
+        .accounts
+        .push(AccountMeta::new_readonly(did_account(controller), false));
+    instruction
+}
+
 /// Create the registry account holding the generative document.
 /// Anyone may pay, and the payer need not be the subject. The subject must
 /// be a key. The program refuses an off-curve address, which only
@@ -289,6 +305,21 @@ pub fn add_service(
     service: &Service<'_>,
 ) -> Instruction {
     let mut data = ADD_SERVICE.to_vec();
+    put_str(&mut data, service.fragment);
+    put_str(&mut data, service.service_type);
+    put_str(&mut data, service.endpoint);
+    instruction(data, update_accounts(payer, authority, subject))
+}
+
+/// Replace the type and endpoint of an existing service in place. The
+/// service keeps its position, and the document gains one version.
+pub fn update_service(
+    payer: &Pubkey,
+    authority: &Pubkey,
+    subject: &Pubkey,
+    service: &Service<'_>,
+) -> Instruction {
+    let mut data = UPDATE_SERVICE.to_vec();
     put_str(&mut data, service.fragment);
     put_str(&mut data, service.service_type);
     put_str(&mut data, service.endpoint);

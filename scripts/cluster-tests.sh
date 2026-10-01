@@ -80,8 +80,8 @@ fund() { # fund <pubkey> <sol>
 repeat() { head -c "$1" /dev/zero | tr '\0' "$2"; }
 
 # Custom program errors as they appear in transaction logs. The client
-# catches InvalidKeyLength (6009) and the key buffer errors (6015 to 6017)
-# before sending, so no case here reaches them on chain.
+# catches InvalidKeyLength (6009), the key buffer errors (6015 to 6017) and
+# InvalidKey (6018) before sending, so no case here reaches them on chain.
 E_UNAUTHORIZED=0x1770
 E_DEACTIVATED=0x1771
 E_INVALID_FRAGMENT=0x1772
@@ -107,10 +107,11 @@ if [ "$NET" = localnet ]; then
   for k in "$SUBJECT" "$SPONSOR" "$ROT" "$OUTSIDER" "$DATASET"; do fund "$(pubkey "$k")" 5; done
 else
   fund "$(pubkey "$SUBJECT")" 0.3; fund "$(pubkey "$SPONSOR")" 0.05; fund "$(pubkey "$ROT")" 0.05
-  fund "$(pubkey "$OUTSIDER")" 0.02; fund "$(pubkey "$DATASET")" 0.05
+  fund "$(pubkey "$OUTSIDER")" 0.02; fund "$(pubkey "$DATASET")" 0.1
 fi
 head -c 32 /dev/urandom > "$KEYS/x25519.bin"
-head -c 33 /dev/urandom > "$KEYS/secp256k1.bin"
+{ printf '\002'; head -c 32 /dev/urandom; } > "$KEYS/secp256k1.bin"
+{ printf '\004'; head -c 32 /dev/urandom; } > "$KEYS/secp256k1-04.bin"
 head -c 2592 /dev/urandom > "$KEYS/ml-dsa-87.bin"
 echo "subject  $SUBJECT_DID"
 echo "dataset  $DATASET_DID"
@@ -127,7 +128,7 @@ fails "init twice" "uninitialized account" run init "$SUBJECT_DID" --keypair "$S
 fails "sponsor gained no control" "$E_UNAUTHORIZED" run add-service x T uri "$SUBJECT_DID" --keypair "$SPONSOR" --dry-run
 fails "outsider cannot write" "$E_UNAUTHORIZED" run add-service x T uri "$SUBJECT_DID" --keypair "$OUTSIDER" --dry-run
 fails "writes to an uninitialized DID" "Invalid account owner" run add-service x T uri "$OUTSIDER_DID" --keypair "$OUTSIDER" --dry-run
-fails "cannot strip capabilityInvocation from the only authority" "$E_LAST_AUTHORITY" run set-flags default --flags authentication,protected "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
+fails "cannot strip capabilityInvocation from the only authority" "$E_LAST_AUTHORITY" run set-flags default --flags authentication "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
 fails "cannot remove the only authority" "$E_LAST_AUTHORITY" run remove-key default "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
 
 section "add_verification_method"
@@ -156,7 +157,11 @@ fails "client: only ed25519 may hold capabilityInvocation" "only ed25519 keys ca
 fails "client: default is reserved" "reserved for the founding key" run add-key default --type ed25519 --key "$ROT_PUB" --flags authentication "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
 fails "client: fragment with invalid characters" "may only contain letters" run add-key "bad fragment!" --type ed25519 --key "$ROT_PUB" --flags authentication "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
 fails "client: fragment longer than 32" "must be 1 to 32 characters" run add-key "$(repeat 33 a)" --type ed25519 --key "$ROT_PUB" --flags authentication "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
-fails "cannot plant a protected key that is not the signer's" "$E_PROTECTED" run add-key plant --type ed25519 --key "$(pubkey "$OUTSIDER")" --flags capability-invocation,protected "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
+fails "client: cannot plant a protected key that is not the signer's" "can only be added under its own key" run add-key plant --type ed25519 --key "$(pubkey "$OUTSIDER")" --flags capability-invocation,protected "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
+OFF_CURVE=$("$BIN" did --keypair "$SUBJECT" --network "$NET" | awk '$1 == "account" { print $2 }')
+fails "client: an ed25519 key off the curve" "not a point on the curve" run add-key bad --type ed25519 --key "$OFF_CURVE" --flags authentication "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
+fails "client: a secp256k1 key starts with 0x02 or 0x03" "must be a compressed point" run add-key bad --type secp256k1 --key-file "$KEYS/secp256k1-04.bin" --flags assertion "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
+fails "client: ML-DSA-87 cannot carry keyAgreement" "only signs" run add-key bad --type ml-dsa-87 --key-file "$KEYS/ml-dsa-87.bin" --flags key-agreement "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
 fails "client: wrong key length" "keys are 32 bytes" run add-key bad --type ed25519 --key 3xyz --flags authentication "$SUBJECT_DID" --keypair "$SUBJECT"
 fails "client: unknown relationship names" "unknown relationship" run add-key bad --type ed25519 --key "$ROT_PUB" --flags admin "$SUBJECT_DID" --keypair "$SUBJECT"
 
@@ -166,12 +171,13 @@ bump
 ok   "a key's own holder changes its protected flags" run set-flags default --flags authentication,assertion,capability-invocation,protected "$SUBJECT_DID" --keypair "$SUBJECT"
 bump
 fails "protected key cannot be changed by another authority" "$E_PROTECTED" run set-flags default --flags authentication "$SUBJECT_DID" --keypair "$ROT" --dry-run
-fails "granting protection needs the key's own holder" "$E_PROTECTED" run set-flags rot --flags authentication,protected "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
+fails "granting protection needs the key's own holder" "$E_PROTECTED" run set-flags rot --flags authentication,capability-invocation,protected "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
 ok   "the key's holder grants itself protection" run set-flags rot --flags authentication,capability-invocation,protected "$SUBJECT_DID" --keypair "$ROT"
 bump
 settle
 ok   "rot now appears under capabilityInvocation" test "$("$BIN" resolve "$SUBJECT_DID" --url "$RPC" | jq -r '[.didDocument.capabilityInvocation[] | select(endswith("#rot"))] | length')" = 1
 fails "client: flags not permitted for the key type" "can only carry key-agreement" run set-flags kex --flags authentication "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
+fails "client: a protected method keeps capabilityInvocation" "must keep capability-invocation" run set-flags default --flags authentication,protected "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
 fails "unknown fragment" "$E_VM_NOT_FOUND" run set-flags nope --flags authentication "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
 
 section "remove_verification_method"
@@ -190,11 +196,15 @@ bump
 settle
 ok   "three verification methods remain" test "$("$BIN" resolve "$SUBJECT_DID" --url "$RPC" | jq '.didDocument.verificationMethod | length')" = 3
 
-section "add_service / remove_service"
+section "add_service / update_service / remove_service"
 ok   "BioMetadata service on IPFS" run add-service metadata BioMetadata ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi "$SUBJECT_DID" --keypair "$SUBJECT"
 bump
 ok   "DataverseRepository service" run add-service repo DataverseRepository https://doi.org/10.5072/FK2/EXAMPLE "$SUBJECT_DID" --keypair "$SUBJECT"
 bump
+ok   "update a service in place" run update-service metadata BioMetadata https://example.org/metadata/v2 "$SUBJECT_DID" --keypair "$SUBJECT"
+bump
+fails "update an unknown service" "$E_SERVICE_NOT_FOUND" run update-service nope BioMetadata ipfs://x "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
+fails "update with whitespace in the endpoint" "$E_INVALID_SERVICE_VALUE" run update-service metadata BioMetadata "ipfs://bad cid" "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
 fails "duplicate service fragment" "$E_FRAGMENT_IN_USE" run add-service metadata BioMetadata ipfs://x "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
 fails "fragments are shared with verification methods" "$E_FRAGMENT_IN_USE" run add-service eth BioMetadata ipfs://x "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
 fails "client: services cannot take the default fragment" "reserved for the founding key" run add-service default BioMetadata ipfs://x "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
@@ -207,6 +217,7 @@ ok   "remove a service" run remove-service tmp "$SUBJECT_DID" --keypair "$SUBJEC
 bump
 settle
 ok   "two services remain, with their types" test "$("$BIN" resolve "$SUBJECT_DID" --url "$RPC" | jq -r '[.didDocument.service[].type] | sort | join(",")')" = "BioMetadata,DataverseRepository"
+ok   "the updated service kept its place" test "$("$BIN" resolve "$SUBJECT_DID" --url "$RPC" | jq -r '[.didDocument.service[].serviceEndpoint] | join(",")')" = "https://example.org/metadata/v2,https://doi.org/10.5072/FK2/EXAMPLE"
 
 section "set_controllers"
 ok   "dataset controlled by a did:bio key and a did:web institution" run set-controllers --controller "$DATASET_PUB" --external did:web:lab.example.org "$SUBJECT_DID" --keypair "$SUBJECT"
@@ -227,10 +238,25 @@ done
 fails "more than 8 native controllers" "$E_TOO_MANY_CONTROLLERS" run set-controllers "${many_native[@]}" "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
 fails "more than 8 external controllers" "$E_TOO_MANY_CONTROLLERS" run set-controllers "${many_external[@]}" "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
 ok   "eight of each is the maximum" run set-controllers "${many_native[@]:0:16}" "${many_external[@]:0:16}" "$SUBJECT_DID" --keypair "$SUBJECT" --dry-run
+
+section "native controller authority (--via)"
+ok   "the controller's key adds a service through --via" run add-service ctl Note https://example.org/ctl "$SUBJECT_DID" --keypair "$DATASET" --via "$DATASET_DID"
+bump
+ok   "and uploads an ML-DSA-87 key through a key buffer" run add-key pqc --type ml-dsa-87 --key-file "$KEYS/ml-dsa-87.bin" --flags assertion "$SUBJECT_DID" --keypair "$DATASET" --via "$DATASET_DID"
+bump
+ok   "and removes the key" run remove-key pqc "$SUBJECT_DID" --keypair "$DATASET" --via "$DATASET_DID"
+bump
+ok   "and the service" run remove-service ctl "$SUBJECT_DID" --keypair "$DATASET" --via "$DATASET_DID"
+bump
+fails "without --via the controller's key is no authority" "$E_UNAUTHORIZED" run add-service x T uri "$SUBJECT_DID" --keypair "$DATASET" --dry-run
+fails "a controller cannot change a protected method" "$E_PROTECTED" run set-flags default --flags authentication,capability-invocation "$SUBJECT_DID" --keypair "$DATASET" --via "$DATASET_DID" --dry-run
+fails "client: --via names a native controller" "is not a native controller" run add-service x T uri "$SUBJECT_DID" --keypair "$OUTSIDER" --via "$OUTSIDER_DID" --dry-run
+fails "client: the signer is an authority of the controller" "is not an authority of" run add-service x T uri "$SUBJECT_DID" --keypair "$OUTSIDER" --via "$DATASET_DID" --dry-run
 ok   "clear all controllers" run set-controllers "$SUBJECT_DID" --keypair "$SUBJECT"
 bump
 settle
 ok   "controller field is gone" test "$("$BIN" resolve "$SUBJECT_DID" --url "$RPC" | jq '.didDocument | has("controller")')" = false
+fails "client: a cleared controller has no authority left" "is not a native controller" run add-service x T uri "$SUBJECT_DID" --keypair "$DATASET" --via "$DATASET_DID" --dry-run
 
 if [ "$LIMITS" = 1 ]; then
   section "table limits (LIMITS=1)"

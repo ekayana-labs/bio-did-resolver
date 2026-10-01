@@ -8,7 +8,7 @@
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/ekayana-labs/bio-did-resolver/badge)](https://scorecard.dev/viewer/?uri=github.com/ekayana-labs/bio-did-resolver)
 
 Resolver and registry client for the
-[`did:bio`](https://github.com/ekayana-labs/did-bio-spec) DID method on
+[`did:bio`](https://github.com/ekayana-labs/bio-did-spec) DID method on
 Solana. It resolves a DID to its DID document and sends the registry
 program's instructions from the command line.
 

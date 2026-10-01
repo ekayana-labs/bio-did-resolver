@@ -1,9 +1,9 @@
 //! Instruction encoding for the did:bio registry program.
 //!
-//! The program ships no client side builders, so the wire format lives
-//! here. Each instruction is an 8 byte discriminator,
-//! `sha256("global:<name>")[..8]`, followed by the borsh encoded arguments. The tests recompute every discriminator
-//! from its name and pin the encoded bytes.
+//! Each instruction is an 8 byte discriminator, `sha256("global:<name>")[..8]`,
+//! followed by the borsh encoded arguments. The tests recompute every
+//! discriminator from its name, pin the encoded bytes and check each builder
+//! against the one in the program's `client` module.
 
 use did_bio_core::account::PROGRAM_ID;
 use solana_sdk::instruction::{AccountMeta, Instruction};

@@ -4,10 +4,12 @@
 //! anything ships.
 
 use bio_did_registry::error::DidError;
-use bio_did_registry::{ix as program_ix, state as program, ID};
+use bio_did_registry::{client, ix as program_ix, state as program, ID};
 use bio_did_resolver::cli::{check_flags, check_key};
 use bio_did_resolver::ix;
 use did_bio_core::account::{self as core, vm_flags, KeyType};
+use solana_sdk::instruction::Instruction;
+use solana_sdk::pubkey::Pubkey;
 
 #[test]
 fn program_id_matches() {
@@ -37,6 +39,153 @@ fn discriminators_match_the_program() {
     assert_eq!(ix::DEACTIVATE, program_ix::DEACTIVATE);
     assert_eq!(ix::INITIALIZE_OWNED, program_ix::INITIALIZE_OWNED);
     assert_eq!(ix::UPDATE_SERVICE, program_ix::UPDATE_SERVICE);
+}
+
+/// An instruction in the plain form the program's `client` builders return.
+fn plain(instruction: Instruction) -> client::Instruction {
+    client::Instruction {
+        program_id: instruction.program_id.to_bytes(),
+        accounts: instruction
+            .accounts
+            .iter()
+            .map(|meta| client::AccountMeta {
+                address: meta.pubkey.to_bytes(),
+                is_signer: meta.is_signer,
+                is_writable: meta.is_writable,
+            })
+            .collect(),
+        data: instruction.data,
+    }
+}
+
+#[test]
+fn builders_match_the_program_client() {
+    let (payer, authority, subject, lab) = ([1u8; 32], [2u8; 32], [3u8; 32], [4u8; 32]);
+    let (p, a, s) = (
+        Pubkey::new_from_array(payer),
+        Pubkey::new_from_array(authority),
+        Pubkey::new_from_array(subject),
+    );
+    let key = [9u8; 2592];
+    let method_type = KeyType::MlDsa87 as u8;
+    let vm = ix::VerificationMethod {
+        fragment: "pq",
+        key_type: method_type,
+        flags: 0x0003,
+        key: &key,
+    };
+    let service = ix::Service {
+        fragment: "metadata",
+        service_type: "BioMetadata",
+        endpoint: "ipfs://bafy",
+    };
+    let pairs = [
+        (ix::initialize(&p, &s), client::initialize(&payer, &subject)),
+        (
+            ix::initialize_owned(&p, &a, 7),
+            client::initialize_owned(&payer, &authority, 7),
+        ),
+        (
+            ix::add_verification_method(&p, &a, &s, &vm),
+            client::add_verification_method(
+                &payer,
+                &authority,
+                &subject,
+                "pq",
+                method_type,
+                0x0003,
+                &key,
+            ),
+        ),
+        (
+            ix::remove_verification_method(&p, &a, &s, "pq"),
+            client::remove_verification_method(&payer, &authority, &subject, "pq"),
+        ),
+        (
+            ix::set_verification_method_flags(&a, &s, "pq", 0x0003),
+            client::set_verification_method_flags(&authority, &subject, "pq", 0x0003),
+        ),
+        (
+            ix::add_service(&p, &a, &s, &service),
+            client::add_service(
+                &payer,
+                &authority,
+                &subject,
+                "metadata",
+                "BioMetadata",
+                "ipfs://bafy",
+            ),
+        ),
+        (
+            ix::update_service(&p, &a, &s, &service),
+            client::update_service(
+                &payer,
+                &authority,
+                &subject,
+                "metadata",
+                "BioMetadata",
+                "ipfs://bafy",
+            ),
+        ),
+        (
+            ix::remove_service(&p, &a, &s, "metadata"),
+            client::remove_service(&payer, &authority, &subject, "metadata"),
+        ),
+        (
+            ix::set_controllers(
+                &p,
+                &a,
+                &s,
+                &[Pubkey::new_from_array(lab)],
+                &["did:web:lab.example.org".to_string()],
+            ),
+            client::set_controllers(
+                &payer,
+                &authority,
+                &subject,
+                &[lab],
+                &["did:web:lab.example.org"],
+            ),
+        ),
+        (
+            ix::deactivate(&p, &a, &s),
+            client::deactivate(&payer, &authority, &subject),
+        ),
+        (
+            ix::create_key_buffer(&p, &a, &s, "pq", method_type, 0x0003, key.len() as u32),
+            client::create_key_buffer(
+                &payer,
+                &authority,
+                &subject,
+                "pq",
+                method_type,
+                0x0003,
+                key.len() as u32,
+            ),
+        ),
+        (
+            ix::write_key_buffer(&a, &s, 900, &key[900..1800]),
+            client::write_key_buffer(&authority, &subject, 900, &key[900..1800]),
+        ),
+        (
+            ix::add_verification_method_from_buffer(&p, &a, &s),
+            client::add_verification_method_from_buffer(&payer, &authority, &subject),
+        ),
+        (
+            ix::close_key_buffer(&p, &a, &s),
+            client::close_key_buffer(&payer, &authority, &subject),
+        ),
+    ];
+    for (ours, theirs) in pairs {
+        let name = theirs.data[..8].to_vec();
+        assert_eq!(plain(ours.clone()), theirs, "{name:?}");
+        assert_eq!(
+            plain(ix::via_controller(ours, &Pubkey::new_from_array(lab))),
+            theirs.via_controller(&lab),
+            "{name:?} via a controller"
+        );
+    }
+    assert_eq!(ix::KEY_CHUNK_LEN, client::KEY_CHUNK_LEN);
 }
 
 #[test]

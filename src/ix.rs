@@ -215,6 +215,16 @@ fn update_accounts(payer: &Pubkey, authority: &Pubkey, subject: &Pubkey) -> Vec<
     ]
 }
 
+/// Append the registry account of `controller`, a native controller of the
+/// DID, read-only. The program reads it when the signer is not one of the
+/// DID's own authorities but is an authority of the controller.
+pub fn via_controller(mut instruction: Instruction, controller: &Pubkey) -> Instruction {
+    instruction
+        .accounts
+        .push(AccountMeta::new_readonly(did_account(controller), false));
+    instruction
+}
+
 /// Create the registry account holding the generative document.
 /// Anyone may pay, and the payer need not be the subject. The subject must
 /// be a key. The program refuses an off-curve address, which only

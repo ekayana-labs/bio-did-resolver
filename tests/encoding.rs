@@ -299,6 +299,28 @@ fn set_flags_needs_no_payer() {
 }
 
 #[test]
+fn via_controller_appends_the_controller_account() {
+    let (payer, authority, subject, lab) = (
+        Pubkey::new_unique(),
+        Pubkey::new_unique(),
+        Pubkey::new_unique(),
+        Pubkey::new_unique(),
+    );
+    for plain in [
+        ix::deactivate(&payer, &authority, &subject),
+        ix::set_verification_method_flags(&authority, &subject, "default", 0x0003),
+        ix::add_verification_method_from_buffer(&payer, &authority, &subject),
+    ] {
+        let via = ix::via_controller(plain.clone(), &lab);
+        assert_eq!(via.data, plain.data);
+        let (last, rest) = via.accounts.split_last().unwrap();
+        assert_eq!(rest, plain.accounts.as_slice());
+        assert_eq!(last.pubkey, ix::did_account(&lab));
+        assert!(!last.is_signer && !last.is_writable);
+    }
+}
+
+#[test]
 fn service_and_fragment_layouts() {
     let (payer, authority, subject) = (
         Pubkey::new_unique(),

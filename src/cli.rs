@@ -223,6 +223,10 @@ pub struct WriteOpts {
     /// Print one JSON object with the signatures and logs instead of text
     #[arg(long)]
     pub json: bool,
+    /// Sign as an authority of this native controller of the DID, given as
+    /// its did:bio. The program then checks the controller's own methods
+    #[arg(long, value_name = "DID")]
+    pub via: Option<String>,
 }
 
 /// Options of `init-owned`, which derives the DID instead of taking one.
@@ -259,6 +263,7 @@ impl OwnedOpts {
             dry_run: self.dry_run,
             yes: self.yes,
             json: self.json,
+            via: None,
         }
     }
 }

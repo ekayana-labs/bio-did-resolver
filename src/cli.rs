@@ -317,6 +317,7 @@ fn key_type_name(key_type: KeyType) -> &'static str {
         KeyType::X25519 => "x25519",
         KeyType::Secp256k1 => "secp256k1",
         KeyType::MlDsa87 => "ml-dsa-87",
+        _ => key_type.on_chain_name(),
     }
 }
 

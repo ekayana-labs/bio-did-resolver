@@ -747,7 +747,7 @@ fn explorer_url(network: Network, signature: &str, rpc: &str) -> String {
         Network::Mainnet => base,
         Network::Devnet => format!("{base}?cluster=devnet"),
         Network::Testnet => format!("{base}?cluster=testnet"),
-        Network::Localnet => format!("{base}?cluster=custom&customUrl={}", percent_encode(rpc)),
+        _ => format!("{base}?cluster=custom&customUrl={}", percent_encode(rpc)),
     }
 }
 

@@ -386,6 +386,34 @@ pub fn check_flags(key_type: KeyType, flags: u16) -> Result<(), String> {
     Ok(())
 }
 
+/// Check key bytes of the right length the way the program does. A
+/// protected method only goes in under its own key. An Ed25519 key is a
+/// point on the curve unless it is the signer itself, which is how a program
+/// address holds authority through CPI. A secp256k1 key is a compressed
+/// point, starting with 0x02 or 0x03.
+pub fn check_key(
+    key_type: KeyType,
+    flags: u16,
+    key: &[u8],
+    signer: &[u8; 32],
+) -> Result<(), String> {
+    if flags & vm_flags::PROTECTED != 0 && key != signer {
+        return Err(
+            "a protected method can only be added under its own key, so sign with that key".into(),
+        );
+    }
+    let on_curve = || <&[u8; 32]>::try_from(key).is_ok_and(did_bio_core::is_on_curve);
+    match key_type {
+        KeyType::Ed25519 if key != signer && !on_curve() => {
+            Err("the ed25519 key is not a point on the curve, so nothing could sign with it".into())
+        }
+        KeyType::Secp256k1 if !matches!(key.first(), Some(0x02 | 0x03)) => {
+            Err("a secp256k1 key must be a compressed point, starting with 0x02 or 0x03".into())
+        }
+        _ => Ok(()),
+    }
+}
+
 /// Check an external controller the way the program does. It is a
 /// `did:<method>:<id>` with a lowercase alphanumeric method and a non-empty
 /// id, in printable ASCII of at most 128 bytes. did:bio controllers are passed by
@@ -512,6 +540,37 @@ mod tests {
         assert!(check_flags(KeyType::MlDsa87, vm_flags::KEY_AGREEMENT)
             .unwrap_err()
             .contains("only signs"));
+    }
+
+    #[test]
+    fn keys_follow_the_program_rules() {
+        let point: [u8; 32] = bs58::decode("2T6zLFvMx7NJac5qQtiKTaPhMwHLkwKETWjUK1yKv4tc")
+            .into_vec()
+            .unwrap()
+            .try_into()
+            .unwrap();
+        // A program derived address is never a curve point.
+        let address =
+            crate::ix::did_account(&solana_sdk::pubkey::Pubkey::new_from_array(point)).to_bytes();
+        let signer = [9u8; 32];
+        let auth = vm_flags::AUTHENTICATION;
+        let protected = vm_flags::CAPABILITY_INVOCATION | vm_flags::PROTECTED;
+        assert!(check_key(KeyType::Ed25519, auth, &point, &signer).is_ok());
+        assert!(check_key(KeyType::Ed25519, auth, &address, &signer)
+            .unwrap_err()
+            .contains("not a point on the curve"));
+        assert!(check_key(KeyType::Ed25519, protected, &address, &address).is_ok());
+        assert!(check_key(KeyType::Ed25519, protected, &point, &signer)
+            .unwrap_err()
+            .contains("its own key"));
+        let mut secp = [7u8; 33];
+        secp[0] = 0x03;
+        assert!(check_key(KeyType::Secp256k1, auth, &secp, &signer).is_ok());
+        secp[0] = 0x04;
+        assert!(check_key(KeyType::Secp256k1, auth, &secp, &signer)
+            .unwrap_err()
+            .contains("compressed"));
+        assert!(check_key(KeyType::MlDsa87, vm_flags::ASSERTION, &[1; 2592], &signer).is_ok());
     }
 
     #[test]

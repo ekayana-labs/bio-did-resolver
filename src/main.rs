@@ -24,7 +24,7 @@ use solana_sdk::signature::{read_keypair_file, Keypair, Signer};
 use solana_sdk::transaction::{Transaction, TransactionError};
 
 use bio_did_resolver::cli::{
-    check_external_controller, check_flags, check_fragment, parse_flags, Cli, Command,
+    check_external_controller, check_flags, check_fragment, check_key, parse_flags, Cli, Command,
     CommitmentArg, NetworkArg, ReadOpts, RelationshipArg, WriteOpts,
 };
 use bio_did_resolver::ix;
@@ -139,6 +139,7 @@ fn run(cli: Cli) -> Result<()> {
             let key = load_key(key.as_deref(), key_file.as_deref(), key_type)?;
             let flags = parse_flags(&flags).map_err(|e| anyhow!(e))?;
             check_flags(key_type, flags).map_err(|e| anyhow!(e))?;
+            check_key(key_type, flags, &key, &w.payer().to_bytes()).map_err(|e| anyhow!(e))?;
             if key.len() > ix::MAX_INLINE_KEY_LEN {
                 return w.finish(w.upload_key(&fragment, key_type, flags, &key));
             }

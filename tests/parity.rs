@@ -5,7 +5,7 @@
 
 use bio_did_registry::error::DidError;
 use bio_did_registry::{ix as program_ix, state as program, ID};
-use bio_did_resolver::cli::check_flags;
+use bio_did_resolver::cli::{check_flags, check_key};
 use bio_did_resolver::ix;
 use did_bio_core::account::{self as core, vm_flags, KeyType};
 
@@ -111,6 +111,54 @@ fn flag_checks_match_the_program() {
                 check_flags(key_type, flags).is_ok(),
                 program::validate_vm_flags(key_type as u8, flags).is_ok(),
                 "{key_type:?} {flags:#06x}"
+            );
+        }
+    }
+}
+
+/// The key checks the client makes before sending agree with the program's
+/// on curve points, addresses off the curve, every first byte of a
+/// secp256k1 key and the signer exception.
+#[test]
+fn key_checks_match_the_program() {
+    use solana_sdk::pubkey::Pubkey;
+    use solana_sdk::signature::{Keypair, Signer};
+    // An off-curve signer, as a program address signing through CPI is.
+    let signer = ix::did_account(&Pubkey::new_unique()).to_bytes();
+    let mut keys: Vec<(KeyType, Vec<u8>)> = vec![(KeyType::Ed25519, signer.to_vec())];
+    for i in 0..64u8 {
+        keys.push((
+            KeyType::Ed25519,
+            Keypair::new().pubkey().to_bytes().to_vec(),
+        ));
+        keys.push((
+            KeyType::Ed25519,
+            ix::did_account(&Pubkey::new_unique()).to_bytes().to_vec(),
+        ));
+        keys.push((KeyType::Ed25519, vec![i; 32]));
+    }
+    for first in 0..=u8::MAX {
+        let mut key = vec![first];
+        key.extend([5u8; 32]);
+        keys.push((KeyType::Secp256k1, key));
+    }
+    keys.push((KeyType::X25519, vec![1; 32]));
+    keys.push((KeyType::MlDsa87, vec![1; 2592]));
+    for (key_type, key) in &keys {
+        for flags in [
+            vm_flags::AUTHENTICATION,
+            vm_flags::CAPABILITY_INVOCATION | vm_flags::PROTECTED,
+        ] {
+            let method = program::NewMethod {
+                fragment: b"k",
+                method_type: *key_type as u8,
+                flags,
+                key_len: key.len(),
+            };
+            assert_eq!(
+                check_key(*key_type, flags, key, &signer).is_ok(),
+                program::check_new_key(&method, key, &signer).is_ok(),
+                "{key_type:?} {flags:#06x} {key:?}"
             );
         }
     }

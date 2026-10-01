@@ -41,6 +41,7 @@ fn discriminators_are_sha256_of_instruction_names() {
         ),
         (ix::CLOSE_KEY_BUFFER, "close_key_buffer"),
         (ix::INITIALIZE_OWNED, "initialize_owned"),
+        (ix::UPDATE_SERVICE, "update_service"),
     ] {
         assert_eq!(constant, discriminator(name), "{name}");
     }
@@ -315,6 +316,15 @@ fn service_and_fragment_layouts() {
     data.extend(str_bytes("BioMetadata"));
     data.extend(str_bytes("ipfs://bafy"));
     assert_eq!(add.data, data);
+
+    // update_service takes the same arguments and accounts as add_service.
+    let update = ix::update_service(&payer, &authority, &subject, &service);
+    let mut data = ix::UPDATE_SERVICE.to_vec();
+    data.extend(str_bytes("metadata"));
+    data.extend(str_bytes("BioMetadata"));
+    data.extend(str_bytes("ipfs://bafy"));
+    assert_eq!(update.data, data);
+    assert_eq!(update.accounts, add.accounts);
 
     let remove = ix::remove_service(&payer, &authority, &subject, "metadata");
     let mut data = ix::REMOVE_SERVICE.to_vec();

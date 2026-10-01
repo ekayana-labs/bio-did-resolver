@@ -36,6 +36,7 @@ fn discriminators_match_the_program() {
     assert_eq!(ix::SET_CONTROLLERS, program_ix::SET_CONTROLLERS);
     assert_eq!(ix::DEACTIVATE, program_ix::DEACTIVATE);
     assert_eq!(ix::INITIALIZE_OWNED, program_ix::INITIALIZE_OWNED);
+    assert_eq!(ix::UPDATE_SERVICE, program_ix::UPDATE_SERVICE);
 }
 
 #[test]

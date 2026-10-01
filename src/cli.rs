@@ -154,6 +154,17 @@ pub enum Command {
         #[command(flatten)]
         write: WriteOpts,
     },
+    /// Replace a service's type and endpoint, keeping its place in the
+    /// document
+    UpdateService {
+        fragment: String,
+        /// New service type, e.g. `BioMetadata`
+        service_type: String,
+        /// New service endpoint URI, e.g. `ipfs://<cid>`
+        endpoint: String,
+        #[command(flatten)]
+        write: WriteOpts,
+    },
     /// Remove a service endpoint
     RemoveService {
         fragment: String,

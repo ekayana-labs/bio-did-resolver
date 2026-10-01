@@ -196,6 +196,24 @@ fn run(cli: Cli) -> Result<()> {
                 ix::add_service(&w.payer(), &w.payer(), &w.subject, &service),
             )
         }
+        Command::UpdateService {
+            fragment,
+            service_type,
+            endpoint,
+            write,
+        } => {
+            let w = Write::new(&write)?;
+            check_fragment(&fragment).map_err(|e| anyhow!(e))?;
+            let service = ix::Service {
+                fragment: &fragment,
+                service_type: &service_type,
+                endpoint: &endpoint,
+            };
+            w.send(
+                "update_service",
+                ix::update_service(&w.payer(), &w.payer(), &w.subject, &service),
+            )
+        }
         Command::RemoveService { fragment, write } => {
             let w = Write::new(&write)?;
             w.send(

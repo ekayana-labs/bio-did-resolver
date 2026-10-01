@@ -27,6 +27,7 @@ pub const ADD_VERIFICATION_METHOD_FROM_BUFFER: [u8; 8] = [111, 184, 129, 9, 216,
 pub const CLOSE_KEY_BUFFER: [u8; 8] = [6, 209, 103, 32, 78, 18, 70, 184];
 // A DID with a program derived subject, controlled by its creator.
 pub const INITIALIZE_OWNED: [u8; 8] = [51, 133, 240, 229, 41, 137, 108, 91];
+pub const UPDATE_SERVICE: [u8; 8] = [46, 169, 26, 33, 191, 78, 40, 221];
 
 /// The program's domain errors, custom codes 6000 upwards, by name and in
 /// the words of its documentation. `tests/parity.rs` pins the table against
@@ -294,6 +295,21 @@ pub fn add_service(
     service: &Service<'_>,
 ) -> Instruction {
     let mut data = ADD_SERVICE.to_vec();
+    put_str(&mut data, service.fragment);
+    put_str(&mut data, service.service_type);
+    put_str(&mut data, service.endpoint);
+    instruction(data, update_accounts(payer, authority, subject))
+}
+
+/// Replace the type and endpoint of an existing service in place. The
+/// service keeps its position, and the document gains one version.
+pub fn update_service(
+    payer: &Pubkey,
+    authority: &Pubkey,
+    subject: &Pubkey,
+    service: &Service<'_>,
+) -> Instruction {
+    let mut data = UPDATE_SERVICE.to_vec();
     put_str(&mut data, service.fragment);
     put_str(&mut data, service.service_type);
     put_str(&mut data, service.endpoint);
